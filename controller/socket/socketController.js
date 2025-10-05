@@ -172,8 +172,15 @@ async function emitConvUpsertForMembers(convDoc) {
     await convDoc.populate({ path: 'members.user', select: 'name email role' });
 
     for (const m of convDoc.members || []) {
-      const viewerId = String(m.user);
+      const viewerId = String(m.user?._id || m.user);
       const view = await buildConvViewForViewer(convDoc, viewerId);
+      console.log(
+        '[conv:upsert] -> room',
+        viewerId,
+        'keys=',
+        Object.keys(view)
+      );
+
       nsp.to(viewerId).emit('conv:upsert', view);
     }
   } catch {}
