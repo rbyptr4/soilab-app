@@ -7,18 +7,22 @@ const { Types } = require('mongoose');
 
 const Conversation = require('../../model/conversationModel');
 const Message = require('../../model/messageModel');
+
 const { resolveChatActor } = require('../../utils/chatActor');
 const { copyObject, deleteFile } = require('../../utils/wasabi');
+const { buildConvViewForViewer } = require('../../utils/conversationView');
 
 const ACCESS_COOKIE_NAME = process.env.ACCESS_COOKIE_NAME || 'accessToken';
 const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET;
 
+/* ================== ACK HELPERS ================== */
 const ackOk = (ack, payload = {}) =>
   typeof ack === 'function' && ack({ ok: true, ...payload });
 const ackErr = (ack, e, code = 'ERROR') =>
   typeof ack === 'function' &&
   ack({ ok: false, code, error: e?.message || String(e) });
 
+/* ================== MAP / VALIDATION ================== */
 const mapMessage = (m) => ({
   id: String(m._id),
   conversationId: String(m.conversation),
@@ -128,7 +132,7 @@ async function joinUserRooms(socket, actor) {
     .lean();
   convs.forEach((c) => socket.join(String(c._id)));
 
-  // personal room (untuk conv:new & conv:touch global)
+  // personal room (untuk conv:new & conv:touch & conv:upsert global)
   socket.join(String(actor.userId));
 
   const roleLower = String(actor.role || '').toLowerCase();
@@ -155,7 +159,24 @@ async function refreshConvLastMessage(convId) {
     );
   }
 
-  return last || null; // balikin buat conv:touch
+  return last || null; // balikin ke pemanggil kalau perlu
+}
+
+/* ================== CONV UPSERT EMITTER ================== */
+async function emitConvUpsertForMembers(convDoc) {
+  try {
+    const nsp = global.io?.of('/chat');
+    if (!nsp) return;
+
+    // pastikan members.user ada untuk build view
+    await convDoc.populate({ path: 'members.user', select: 'name email role' });
+
+    for (const m of convDoc.members || []) {
+      const viewerId = String(m.user);
+      const view = await buildConvViewForViewer(convDoc, viewerId);
+      nsp.to(viewerId).emit('conv:upsert', view);
+    }
+  } catch {}
 }
 
 /* ================== CONNECTION HANDLER ================== */
@@ -234,6 +255,9 @@ async function onConnection(nsp, socket) {
               nsp.to(id).emit('conv:touch', touchPayload)
             );
 
+            // **penting**: kirim conv:upsert dengan payload lengkap (viewer-specific)
+            await emitConvUpsertForMembers(conv);
+
             return ackOk(ack, { message: dto });
           }
         }
@@ -275,6 +299,9 @@ async function onConnection(nsp, socket) {
         };
         nsp.to(String(conversationId)).emit('conv:touch', touchPayload);
         memberIds.forEach((id) => nsp.to(id).emit('conv:touch', touchPayload));
+
+        // **penting**: kirim conv:upsert supaya FE langsung punya title/type
+        await emitConvUpsertForMembers(conv);
 
         // ack ke pengirim
         ackOk(ack, { message: dto });
@@ -397,6 +424,8 @@ async function onConnection(nsp, socket) {
             at: msg.deletedAt
           });
 
+          await emitConvUpsertForMembers(conv);
+
           return ackOk(ack, { messageId: String(msg._id), mode: 'soft' });
         }
 
@@ -435,6 +464,8 @@ async function onConnection(nsp, socket) {
         const memberIds = (conv.members || []).map((m) => String(m.user));
         nsp.to(String(conv._id)).emit('conv:touch', touchPayload);
         memberIds.forEach((id) => nsp.to(id).emit('conv:touch', touchPayload));
+
+        await emitConvUpsertForMembers(conv);
 
         return ackOk(ack, { messageId: String(msg._id), mode: 'hard' });
       } catch (e) {

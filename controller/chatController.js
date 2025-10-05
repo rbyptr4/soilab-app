@@ -3,7 +3,7 @@
 /* ========= IMPORTS ========= */
 const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
-const { deleteFile } = require('../utils/wasabi'); // <— sesuai permintaan
+const { deleteFile } = require('../utils/wasabi');
 const throwError = require('../utils/throwError');
 const { resolveChatActor } = require('../utils/chatActor');
 
@@ -11,6 +11,12 @@ const Conversation = require('../model/conversationModel');
 const Message = require('../model/messageModel');
 const Employee = require('../model/employeeModel');
 const User = require('../model/userModel');
+
+const {
+  buildConvViewForViewer,
+  buildEmpNameMapFromUsers,
+  pickDisplayNameWithEmp
+} = require('../utils/conversationView');
 
 /* ========= HELPERS ========= */
 const asId = (x) => new mongoose.Types.ObjectId(String(x));
@@ -56,150 +62,21 @@ function escapeRegex(s = '') {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-const getUid = (u) => String((u && (u._id || u.id || u)) || '');
-async function buildEmpNameMapFromUsers(users = []) {
-  const ids = new Set();
-  for (const u of users) {
-    if (!u) continue;
-    const role = String(u.role || '').toLowerCase();
-    if (role === 'karyawan') ids.add(getUid(u));
-  }
-  if (!ids.size) return new Map();
-  const emps = await Employee.find({ user: { $in: Array.from(ids) } })
-    .select('user name')
-    .lean();
-  return new Map(emps.map((e) => [String(e.user), e.name]));
-}
-
-function pickDisplayNameWithEmp(userDoc, empMap = new Map()) {
-  if (!userDoc) return 'Tanpa Nama';
-  const uid = String(userDoc._id || userDoc.id || userDoc) || '';
-  const role = String(userDoc.role || '').toLowerCase();
-
-  if (role === 'karyawan') {
-    return empMap.get(uid) || userDoc.name || userDoc.email || 'Tanpa Nama';
-  }
-  if (role === 'bot') {
-    return userDoc.name || 'Soilab Bot';
-  }
-  return userDoc.name || userDoc.email || 'Tanpa Nama';
-}
-
-async function buildConvViewForViewer(convDoc, viewerUserId) {
-  await convDoc.populate({ path: 'members.user', select: 'name email role' });
-
-  const allUsers = (convDoc.members || []).map((m) => m.user).filter(Boolean);
-  const empMap = await buildEmpNameMapFromUsers(allUsers);
-
-  const decoratedMembers = (convDoc.members || []).map((m) => {
-    const u = m.user;
-    return {
-      ...(typeof m.toObject === 'function' ? m.toObject() : m),
-      user: u
-        ? { _id: u._id, name: u.name, email: u.email, role: u.role }
-        : null,
-      displayName: u ? pickDisplayNameWithEmp(u, empMap) : 'Tanpa Nama'
-    };
-  });
-
-  const me = decoratedMembers.find(
-    (m) => String(m.user?._id || m.user) === String(viewerUserId)
-  );
-  const hideBefore = me?.deletedAt ? new Date(me.deletedAt) : new Date(0);
-
-  let last = await Message.findOne({
-    conversation: convDoc._id,
-    createdAt: { $gt: hideBefore }
-  })
-    .sort({ createdAt: -1, _id: -1 })
-    .select('_id text attachments sender createdAt type conversation')
-    .populate({ path: 'sender', select: 'name email role' })
-    .lean();
-
-  if (last?.sender) {
-    last.sender = {
-      _id: String(last.sender._id),
-      role: last.sender.role,
-      name: pickDisplayNameWithEmp(last.sender, empMap),
-      email: last.sender.email
-    };
-  }
-
-  let displayTitle = convDoc.title?.trim() || null;
-  if (convDoc.type !== 'group') {
-    const other = decoratedMembers.find(
-      (m) => String(m.user?._id || m.user) !== String(viewerUserId)
-    );
-    displayTitle = other?.displayName || displayTitle || 'Tanpa Nama';
-  } else {
-    displayTitle = displayTitle || 'Tanpa Nama';
-  }
-
-  const computedTitle =
-    convDoc.type === 'group'
-      ? convDoc.title?.trim() || 'Tanpa Nama'
-      : displayTitle || 'Tanpa Nama';
-
-  const idStr = String(convDoc._id);
-
-  return {
-    _id: idStr,
-    id: idStr,
-    type: convDoc.type,
-    title: computedTitle,
-    displayTitle,
-    name: displayTitle,
-    members: decoratedMembers.map((m) => ({
-      user: m.user
-        ? {
-            _id: String(m.user._id),
-            name: m.user.name,
-            email: m.user.email,
-            role: m.user.role
-          }
-        : null,
-      role: m.role,
-      lastReadAt: m.lastReadAt || null,
-      pinned: !!m.pinned,
-      deletedAt: m.deletedAt || null,
-      displayName: m.displayName
-    })),
-    createdBy: String(convDoc.createdBy || ''),
-    createdAt: convDoc.createdAt,
-    updatedAt: convDoc.updatedAt,
-    expireAt: convDoc.expireAt || null,
-    pinnedMessages: convDoc.pinnedMessages || [],
-    lastMessageAt: last?.createdAt || null,
-    lastMessage: last
-      ? {
-          id: String(last._id),
-          conversationId: idStr,
-          sender: last.sender || null,
-          type: last.type,
-          text: last.text,
-          attachments: last.attachments || [],
-          createdAt: last.createdAt
-        }
-      : null
-  };
-}
-
-async function emitConvNewForAllMembers(convDoc) {
+/* ========= EMIT HELPERS ========= */
+async function emitConvUpsertForAllMembers(convDoc) {
   try {
     const nsp = global.io?.of('/chat');
     if (!nsp) return;
 
+    await convDoc.populate({ path: 'members.user', select: 'name email role' });
+
     for (const m of convDoc.members || []) {
       const viewerId = String(m.user);
       const view = await buildConvViewForViewer(convDoc, viewerId);
-
-      console.log('[conv:new] ->', viewerId, {
-        id: view.id,
-        type: view.type,
-        title: view.title,
-        displayTitle: view.displayTitle
-      });
+      // kompatibilitas lama
       nsp.to(viewerId).emit('conv:new', view);
+      // standar baru — payload lengkap viewer-specific
+      nsp.to(viewerId).emit('conv:upsert', view);
     }
   } catch {}
 }
@@ -220,7 +97,6 @@ const listConversations = asyncHandler(async (req, res) => {
 
   const pipeline = [
     { $match: baseMatch },
-
     // Ambil profil member "me" + cutoff
     {
       $addFields: {
@@ -236,7 +112,6 @@ const listConversations = asyncHandler(async (req, res) => {
       }
     },
     { $addFields: { hideBefore: { $ifNull: ['$me.deletedAt', new Date(0)] } } },
-
     // Last message setelah cutoff -> lastVisible
     {
       $lookup: {
@@ -255,19 +130,25 @@ const listConversations = asyncHandler(async (req, res) => {
           },
           { $sort: { createdAt: -1, _id: -1 } },
           { $limit: 1 },
-          { $project: { createdAt: 1, text: 1, attachments: 1, sender: 1 } }
+          {
+            $project: {
+              createdAt: 1,
+              text: 1,
+              attachments: 1,
+              sender: 1,
+              type: 1
+            }
+          }
         ],
         as: 'lastVisible'
       }
     },
     { $set: { lastVisible: { $first: '$lastVisible' } } },
     { $set: { lastVisibleAt: '$lastVisible.createdAt' } },
-
     // Tampilkan hanya convo yang masih punya pesan setelah hideBefore
     { $match: { lastVisibleAt: { $ne: null } } }
   ];
 
-  // Cursor berdasarkan lastVisibleAt
   if (cursor) {
     const c = readCursor(cursor);
     if (c?.date && c?.id) {
@@ -295,7 +176,6 @@ const listConversations = asyncHandler(async (req, res) => {
         updatedAt: 1,
         expireAt: 1,
         pinnedMessages: 1,
-
         lastMessage: '$lastVisible',
         lastMessageAt: '$lastVisibleAt'
       }
@@ -329,7 +209,7 @@ const listConversations = asyncHandler(async (req, res) => {
     const su = senderMap.get(String(c.lastMessage?.sender));
     if (su) allUsers.push(su);
   }
-  const empMap = await buildEmpNameMapFromUsers(allUsers); // <-- BUAT DULU
+  const empMap = await buildEmpNameMapFromUsers(allUsers);
 
   const myId = String(actor.userId);
   for (const c of items) {
@@ -358,7 +238,6 @@ const listConversations = asyncHandler(async (req, res) => {
         other?.displayName ||
         pickDisplayNameWithEmp(other?.user, empMap) ||
         'Tanpa Nama';
-
       c.title = c.displayTitle; // sinkron utk FE lama
     } else {
       c.title = c.title?.trim() || 'Tanpa Nama';
@@ -403,7 +282,6 @@ const createConversation = asyncHandler(async (req, res) => {
   if (!Array.isArray(memberIds) || memberIds.length < 1) {
     throwError('memberIds wajib diisi', 400);
   }
-
   if (roleLower === 'user') {
     throwError(
       'Customer tidak bisa membuat percakapan langsung. Gunakan /chat/customer/open',
@@ -423,8 +301,7 @@ const createConversation = asyncHandler(async (req, res) => {
       memberKey: `${a}:${b}`
     });
     if (existing) {
-      // Kirim realtime payload yang sudah dihias (viewer-specific) dan balas untuk pemanggil
-      await emitConvNewForAllMembers(existing);
+      await emitConvUpsertForAllMembers(existing);
       const viewForCreator = await buildConvViewForViewer(
         existing,
         actor.userId
@@ -458,11 +335,9 @@ const createConversation = asyncHandler(async (req, res) => {
     members
   });
 
-  // Emit ke semua anggota dengan payload yang sudah viewer-specific
   await conv.populate({ path: 'members.user', select: 'name email role' });
-  await emitConvNewForAllMembers(conv);
+  await emitConvUpsertForAllMembers(conv);
 
-  // Kembalikan payload yang sudah dihias untuk pembuat
   const viewForCreator = await buildConvViewForViewer(conv, actor.userId);
   res.status(201).json(viewForCreator);
 });
@@ -479,19 +354,20 @@ const updateConversation = asyncHandler(async (req, res) => {
   if (!me) throwError('Bukan anggota', 403);
 
   if (typeof title === 'string') {
-    if (conv.type === 'customer') {
+    if (conv.type === 'customer')
       throwError('Percakapan customer tidak memiliki judul untuk diubah', 400);
-    }
-    if (conv.type !== 'group') {
+    if (conv.type !== 'group')
       throwError('Title hanya bisa diubah untuk grup', 400);
-    }
-    if (!['owner', 'admin'].includes(me.role)) {
+    if (!['owner', 'admin'].includes(me.role))
       throwError('Hanya owner/admin grup yang bisa ganti nama', 403);
-    }
     conv.title = title.trim() || conv.title;
   }
 
   await conv.save();
+
+  // kirim upsert supaya FE dapat title baru
+  await emitConvUpsertForAllMembers(conv);
+
   res.json(conv);
 });
 
@@ -505,9 +381,8 @@ const updateMembers = asyncHandler(async (req, res) => {
 
   const me = conv.members.find((m) => String(m.user) === String(actor.userId));
   if (!me) throwError('Bukan anggota', 403);
-  if (!['owner', 'admin'].includes(me.role)) {
+  if (!['owner', 'admin'].includes(me.role))
     throwError('Hanya owner/admin grup yang boleh kelola anggota', 403);
-  }
   if (conv.type === 'direct') throwError('Direct tidak bisa ubah anggota', 400);
   if (conv.type === 'customer')
     throwError('Percakapan customer tidak bisa diubah anggotanya', 400);
@@ -515,11 +390,7 @@ const updateMembers = asyncHandler(async (req, res) => {
   // Tambah
   for (const uid of new Set(add.map(String))) {
     if (!conv.members.some((m) => String(m.user) === uid)) {
-      conv.members.push({
-        user: asId(uid),
-        role: 'member',
-        lastReadAt: null
-      });
+      conv.members.push({ user: asId(uid), role: 'member', lastReadAt: null });
     }
   }
 
@@ -551,6 +422,10 @@ const updateMembers = asyncHandler(async (req, res) => {
   }
 
   await conv.save();
+
+  // kirim upsert untuk sinkron anggota
+  await emitConvUpsertForAllMembers(conv);
+
   res.json(conv);
 });
 
@@ -653,10 +528,10 @@ const openCustomerChat = asyncHandler(async (req, res) => {
     });
 
     await conv.populate({ path: 'members.user', select: 'name email role' });
-    await emitConvNewForAllMembers(conv);
+    await emitConvUpsertForAllMembers(conv);
   } else {
     await conv.populate({ path: 'members.user', select: 'name email role' });
-    await emitConvNewForAllMembers(conv);
+    await emitConvUpsertForAllMembers(conv);
   }
 
   res.json({
@@ -738,9 +613,8 @@ const pinMessage = asyncHandler(async (req, res) => {
   const { messageId, clientId } = req.body || {};
 
   if (!isValidId(id)) throwError('conversationId tidak valid', 400);
-  if (!messageId && !clientId) {
+  if (!messageId && !clientId)
     throwError('Harus kirim messageId atau clientId', 400);
-  }
 
   const conv = await Conversation.findOne({
     _id: id,
@@ -748,33 +622,23 @@ const pinMessage = asyncHandler(async (req, res) => {
   }).select('type members pinnedMessages');
   if (!conv) throwError('Percakapan tidak ditemukan / bukan anggota', 403);
 
-  if (!canManagePin(conv, req.user.role, actor.userId)) {
+  if (!canManagePin(conv, req.user.role, actor.userId))
     throwError('Tidak punya izin untuk pin pesan', 403);
-  }
 
-  // cutoff untuk pin visibility (biar konsisten)
+  // cutoff untuk pin visibility
   const me = conv.members.find((m) => String(m.user) === String(actor.userId));
   const hideBefore = me?.deletedAt ? new Date(me.deletedAt) : new Date(0);
 
   let msg = null;
-  const baseMsgFind = {
-    conversation: id,
-    createdAt: { $gt: hideBefore }
-  };
+  const baseMsgFind = { conversation: id, createdAt: { $gt: hideBefore } };
 
   if (messageId) {
-    msg = await Message.findOne({
-      _id: messageId,
-      ...baseMsgFind
-    })
+    msg = await Message.findOne({ _id: messageId, ...baseMsgFind })
       .select('_id sender type text attachments createdAt clientId')
       .populate({ path: 'sender', select: 'name email role' })
       .lean();
   } else if (clientId) {
-    msg = await Message.findOne({
-      clientId,
-      ...baseMsgFind
-    })
+    msg = await Message.findOne({ clientId, ...baseMsgFind })
       .select('_id sender type text attachments createdAt clientId')
       .populate({ path: 'sender', select: 'name email role' })
       .lean();
@@ -842,9 +706,8 @@ const unpinMessage = asyncHandler(async (req, res) => {
   }).select('type members pinnedMessages');
   if (!conv) throwError('Percakapan tidak ditemukan / bukan anggota', 403);
 
-  if (!canManagePin(conv, req.user.role, actor.userId)) {
+  if (!canManagePin(conv, req.user.role, actor.userId))
     throwError('Tidak punya izin untuk unpin pesan', 403);
-  }
 
   const before = conv.pinnedMessages.length;
   conv.pinnedMessages = (conv.pinnedMessages || []).filter(
@@ -881,10 +744,7 @@ const listPinnedMessages = asyncHandler(async (req, res) => {
       select: 'type text attachments sender createdAt deletedAt',
       populate: { path: 'sender', select: 'name email role' }
     })
-    .populate({
-      path: 'pinnedMessages.pinnedBy',
-      select: 'name email role'
-    })
+    .populate({ path: 'pinnedMessages.pinnedBy', select: 'name email role' })
     .lean();
 
   if (!conv) throwError('Percakapan tidak ditemukan / bukan anggota', 403);
@@ -958,11 +818,9 @@ const getConversationMedia = asyncHandler(async (req, res) => {
     attachments: { $exists: true, $ne: [] },
     createdAt: { $gt: hideBefore }
   };
-  if (type === 'image') {
-    find['attachments.contentType'] = { $regex: '^image/' };
-  } else if (type === 'file') {
+  if (type === 'image') find['attachments.contentType'] = { $regex: '^image/' };
+  else if (type === 'file')
     find['attachments.contentType'] = { $not: /^image\// };
-  }
 
   if (cursor) {
     const c = readCursor(cursor);
@@ -1091,9 +949,7 @@ const deleteConversation = asyncHandler(async (req, res) => {
     const allKeys = [];
     for (const msg of messages) {
       if (Array.isArray(msg.attachments)) {
-        for (const a of msg.attachments) {
-          if (a?.key) allKeys.push(a.key);
-        }
+        for (const a of msg.attachments) if (a?.key) allKeys.push(a.key);
       }
     }
 
@@ -1119,16 +975,14 @@ const deleteMessage = asyncHandler(async (req, res) => {
 
   if (messageId && isValidId(messageId)) {
     msg = await Message.findById(messageId)
-      .populate('conversation', 'members') // _id tetap ikut
+      .populate('conversation', 'members')
       .lean();
   }
-
   if (!msg && clientId) {
     msg = await Message.findOne({ clientId })
       .populate('conversation', 'members')
       .lean();
   }
-
   if (!msg) throwError('Pesan tidak ditemukan', 404);
 
   const conv = msg.conversation;
@@ -1145,9 +999,8 @@ const deleteMessage = asyncHandler(async (req, res) => {
   }
 
   const allKeys = (msg.attachments || []).map((a) => a.key).filter(Boolean);
-  if (allKeys.length > 0) {
+  if (allKeys.length > 0)
     await Promise.allSettled(allKeys.map((key) => deleteFile(key)));
-  }
 
   await Message.deleteOne({ _id: msg._id });
 
@@ -1168,7 +1021,7 @@ const deleteMessage = asyncHandler(async (req, res) => {
     );
   }
 
-  // siapkan payload conv:touch
+  // siapkan payload conv:touch (kompat lama)
   const touchPayload = {
     conversationId: String(conv._id),
     lastMessageAt: last?.createdAt || null,
@@ -1187,17 +1040,18 @@ const deleteMessage = asyncHandler(async (req, res) => {
 
   try {
     const nsp = global.io?.of('/chat');
-
     nsp?.to(String(conv._id)).emit('chat:delete', {
       conversationId: String(conv._id),
       messageId: String(msg._id),
       mode: 'hard'
     });
-
+    const memberIds = (conv.members || []).map((m) => String(m.user));
     nsp?.to(String(conv._id)).emit('conv:touch', touchPayload);
-    for (const m of conv.members) {
-      nsp?.to(String(m.user)).emit('conv:touch', touchPayload);
-    }
+    memberIds.forEach((id) => nsp?.to(id).emit('conv:touch', touchPayload));
+
+    // kirim metadata lengkap agar FE langsung sinkron (title/type/lastMessage)
+    const convDoc = await Conversation.findById(conv._id);
+    await emitConvUpsertForAllMembers(convDoc);
   } catch {}
 
   res.json({
@@ -1234,7 +1088,6 @@ const getMessagesAround = asyncHandler(async (req, res) => {
   );
   const hideBefore = me?.deletedAt ? new Date(me.deletedAt) : new Date(0);
 
-  // Anchor harus berada SETELAH hideBefore
   const anchor = await Message.findOne({
     _id: messageId,
     conversation: id,
@@ -1367,13 +1220,7 @@ const searchMessagesInConversation = asyncHandler(async (req, res) => {
   const nextCursor =
     hasMore && last ? makeCursor(last.createdAt, last._id) : null;
 
-  res.json({
-    totals: { messages: total },
-    total,
-    items,
-    nextCursor,
-    hasMore
-  });
+  res.json({ totals: { messages: total }, total, items, nextCursor, hasMore });
 });
 
 const searchMessagesGlobal = asyncHandler(async (req, res) => {
@@ -1384,9 +1231,7 @@ const searchMessagesGlobal = asyncHandler(async (req, res) => {
   if (!q || !q.trim()) throwError('Query pencarian wajib diisi', 400);
   const re = new RegExp(escapeRegex(q), 'i');
 
-  const myConvs = await Conversation.find({
-    'members.user': actor.userId
-  })
+  const myConvs = await Conversation.find({ 'members.user': actor.userId })
     .select('_id title type updatedAt members')
     .populate({ path: 'members.user', select: 'name email role' })
     .lean();
