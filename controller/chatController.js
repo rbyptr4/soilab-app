@@ -62,6 +62,9 @@ function escapeRegex(s = '') {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const escapeRegexContacts = (s = '') =>
+  s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /* ========= EMIT HELPERS ========= */
 async function emitConvUpsertForAllMembers(convDoc) {
   try {
@@ -540,54 +543,181 @@ const openCustomerChat = asyncHandler(async (req, res) => {
   });
 });
 
+const makeCursorContacts = (nameLower, userId) =>
+  Buffer.from(`${nameLower}|${userId}`).toString('base64');
+const readCursorContacts = (cur) => {
+  try {
+    const [nameLower, userId] = Buffer.from(cur, 'base64')
+      .toString('utf8')
+      .split('|');
+    return { nameLower, userId };
+  } catch {
+    return null;
+  }
+};
+
 const getContacts = asyncHandler(async (req, res) => {
   const role = String(req.user.role || '').toLowerCase();
-  const myUserId = req.user.id;
+  const myUserId = String(req.user.id);
 
   if (role === 'user') {
-    return res.json({ contacts: [] });
+    return res.json({ items: [], nextCursor: null, hasMore: false });
   }
 
-  const employees = await Employee.find({ user: { $ne: myUserId } })
-    .select('_id name user')
-    .populate('user', 'role email')
-    .lean();
+  // query params
+  const q = String(req.query.q || '').trim();
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+  const cursor = req.query.cursor ? String(req.query.cursor) : null;
+  const cur = cursor ? readCursorContacts(cursor) : null;
 
-  const admins = await User.find({ role: 'admin', _id: { $ne: myUserId } })
-    .select('_id role email name')
-    .lean();
+  const re = q ? new RegExp(escapeRegexContacts(q), 'i') : null;
+  const myOid = new mongoose.Types.ObjectId(myUserId);
 
-  const bots = await User.find({ role: 'bot' })
-    .select('_id role email name')
-    .lean();
+  // Pipeline utama mulai dari Employee
+  const pipeline = [
+    // ===== employees =====
+    {
+      $match: {
+        ...(re ? { name: re } : {})
+      }
+    },
+    // Exclude diri sendiri di employees (pakai lookup karena field user di ref)
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'user',
+        foreignField: '_id',
+        as: 'u'
+      }
+    },
+    { $unwind: '$u' },
+    { $match: { 'u._id': { $ne: myOid } } },
+    {
+      $project: {
+        // shape unify
+        userId: '$u._id',
+        id: '$_id', // biarin id = employeeId untuk kompat lama
+        name: '$name',
+        role: { $ifNull: ['$u.role', 'karyawan'] },
+        email: '$u.email',
+        source: { $literal: 'employee' },
+        priority: { $literal: 1 } // employee menang saat dedupe
+      }
+    },
+    // ===== gabungkan admins =====
+    {
+      $unionWith: {
+        coll: 'users',
+        pipeline: [
+          {
+            $match: {
+              role: 'admin',
+              _id: { $ne: myOid },
+              ...(re ? { $or: [{ name: re }, { email: re }] } : {})
+            }
+          },
+          {
+            $project: {
+              userId: '$_id',
+              id: '$_id', // tidak ada employeeId, pakai userId
+              name: { $ifNull: ['$name', 'Admin'] },
+              role: '$role',
+              email: '$email',
+              source: { $literal: 'admin' },
+              priority: { $literal: 2 }
+            }
+          }
+        ]
+      }
+    },
+    // ===== gabungkan bots =====
+    {
+      $unionWith: {
+        coll: 'users',
+        pipeline: [
+          {
+            $match: {
+              role: 'bot',
+              ...(re ? { $or: [{ name: re }, { email: re }] } : {})
+            }
+          },
+          {
+            $project: {
+              userId: '$_id',
+              id: '$_id',
+              name: { $ifNull: ['$name', 'Soilab Bot'] },
+              role: '$role',
+              email: '$email',
+              source: { $literal: 'bot' },
+              priority: { $literal: 3 }
+            }
+          }
+        ]
+      }
+    },
+    // ===== dedupe by userId, pilih prioritas paling tinggi (1 < 2 < 3) =====
+    { $sort: { userId: 1, priority: 1 } },
+    {
+      $group: {
+        _id: '$userId',
+        doc: { $first: '$$ROOT' }
+      }
+    },
+    { $replaceRoot: { newRoot: '$doc' } },
 
-  const empContacts = employees.map((e) => ({
-    userId: e.user?._id,
-    id: String(e._id),
-    name: e.name,
-    role: e.user?.role || 'karyawan',
-    email: e.user?.email || null
-  }));
+    // ===== siapkan sort key case-insensitive =====
+    { $addFields: { sortName: { $toLower: { $ifNull: ['$name', ''] } } } },
 
-  const adminContacts = admins.map((a) => ({
-    userId: a._id,
-    id: String(a._id),
-    name: a.name || 'Admin',
-    role: a.role,
-    email: a.email
-  }));
+    // ===== cursor paging (lexicographic by nameLower, tie-breaker by userId) =====
+    ...(cur && cur.nameLower
+      ? [
+          {
+            $match: {
+              $or: [
+                { sortName: { $gt: cur.nameLower } },
+                {
+                  $and: [
+                    { sortName: { $eq: cur.nameLower } },
+                    { userId: { $gt: new mongoose.Types.ObjectId(cur.userId) } }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      : []),
 
-  const botContacts = bots.map((b) => ({
-    userId: b._id,
-    id: String(b._id),
-    name: b.name || 'Soilab Bot',
-    role: b.role,
-    email: b.email || null
-  }));
+    // ===== final sort & limit =====
+    { $sort: { sortName: 1, userId: 1 } },
+    { $limit: limit + 1 },
 
-  const contacts = [...empContacts, ...adminContacts, ...botContacts];
+    // ===== project final shape =====
+    {
+      $project: {
+        _id: 0,
+        userId: { $toString: '$userId' },
+        id: { $toString: '$id' },
+        name: 1,
+        role: 1,
+        email: 1
+      }
+    }
+  ];
 
-  res.json({ contacts });
+  const itemsRaw = await Employee.aggregate(pipeline).option({
+    collation: { locale: 'id', strength: 1 }
+  });
+
+  const hasMore = itemsRaw.length > limit;
+  const items = hasMore ? itemsRaw.slice(0, limit) : itemsRaw;
+
+  const last = items[items.length - 1] || null;
+  const nextCursor =
+    hasMore && last
+      ? makeCursorContacts((last.name || '').toLowerCase(), last.userId)
+      : null;
+
+  return res.json({ items, nextCursor, hasMore });
 });
 
 function canManagePin(conv, reqRole, userId) {
