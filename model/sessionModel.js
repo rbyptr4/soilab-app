@@ -9,7 +9,7 @@ const SessionSchema = new mongoose.Schema(
     remember: { type: Boolean, default: false },
     ua: String,
     ip: String,
-    expiresAt: { type: Date, index: true }, // TTL
+    expiresAt: { type: Date }, // TTL
     revokedAt: Date,
     replacedAt: Date
   },
