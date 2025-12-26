@@ -58,7 +58,7 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
-  const { borrower, project, search, sort } = req.query;
+  const { search, sort } = req.query;
 
   const filter = {};
   if (search) {
@@ -67,8 +67,6 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
       { inventory_manager: { $regex: search, $options: 'i' } }
     ];
   }
-  if (borrower) filter.borrower = borrower;
-  if (project) filter['borrowed_items.project'] = project;
 
   let sortOption = { createdAt: -1 };
   if (sort) {
@@ -77,25 +75,25 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
   }
 
   const totalItems = await LoanCirculation.countDocuments(filter);
+
   let rows = await LoanCirculation.find(filter)
-    .populate('borrowed_items.warehouse_from', 'warehouse_name warehouse_code')
-    .populate('borrowed_items.shelf_from', 'shelf_name shelf_code')
-    .populate('borrowed_items.project', 'project_name')
-    .populate('borrowed_items.product', 'product_code brand')
-    .populate('warehouse_to', 'warehouse_name warehouse_code')
-    .populate('shelf_to', 'shelf_name shelf_code')
+    .select(
+      'loan_number borrower inventory_manager phone loan_date_circulation borrowed_items.item_status'
+    )
     .populate('borrower', 'name')
     .skip(skip)
     .limit(limit)
     .sort(sortOption)
     .lean();
 
-  rows = rows.map((row) => {
-    return {
-      ...row,
-      loan_status: computeLoanStatus(row.borrowed_items)
-    };
-  });
+  const data = rows.map((row) => ({
+    loan_number: row.loan_number,
+    loan_status: computeLoanStatus(row.borrowed_items),
+    borrower: row.borrower?.name || null,
+    inventory_manager: row.inventory_manager,
+    phone: row.phone,
+    loan_date_circulation: row.loan_date_circulation
+  }));
 
   res.status(200).json({
     page,
@@ -103,7 +101,7 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
     totalItems,
     totalPages: Math.ceil(totalItems / limit),
     sort: sortOption,
-    data: rows
+    data
   });
 });
 
