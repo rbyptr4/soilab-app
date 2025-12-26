@@ -49,9 +49,6 @@ const createLoanSchema = Joi.object({
       'any.required': 'Penanggung jawab wajib diisi',
       'any.only': 'Penanggung jawab hanya Owan H., Teguh F., dan Korlap'
     }),
-  warehouse_to: objectId('ID gudang tujuan').required().messages({
-    'any.required': 'Gudang tujuan wajib diisi!'
-  }),
 
   // FE hanya kirim minimal; sisanya di-resolve dari Inventory di controller
   borrowed_items: Joi.alternatives()
@@ -105,7 +102,6 @@ const updateLoanSchema = Joi.object({
   inventory_manager: Joi.string()
     .valid('Owan H.', 'Teguh F.', 'Korlap')
     .optional(),
-  warehouse_to: objectId('ID gudang tujuan').optional(),
 
   // Jika FE kirim items → kita rebuild full array (controller kamu sudah seperti itu)
   borrowed_items: Joi.alternatives().try(
