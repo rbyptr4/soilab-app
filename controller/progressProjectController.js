@@ -15,9 +15,8 @@ function computeOverallPercent(doc) {
 }
 
 const getProjects = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const search = req.query.search || '';
   const filter = search
@@ -33,24 +32,29 @@ const getProjects = asyncHandler(async (req, res) => {
     filter.client = req.query.client;
   }
 
-  const totalItems = await ProgressProject.countDocuments(filter);
+  if (cursor) {
+    filter.createdAt = { $lt: new Date(cursor) };
+  }
+
   const raw = await ProgressProject.find(filter)
     .populate('client', 'name')
-    .skip(skip)
-    .limit(limit)
     .sort({ createdAt: -1 })
+    .limit(limit + 1)
     .lean();
 
-  const data = raw.map((d) => ({
+  const hasMore = raw.length > limit;
+  const sliced = hasMore ? raw.slice(0, limit) : raw;
+
+  const data = sliced.map((d) => ({
     ...d
   }));
 
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
   res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data
+    data,
+    nextCursor,
+    hasMore
   });
 });
 

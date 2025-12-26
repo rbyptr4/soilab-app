@@ -502,9 +502,8 @@ const addPVReport = asyncHandler(async (req, res) => {
 /* ========================= Read (list & detail) ========================= */
 
 const getPVReports = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const search = req.query.search || '';
   const filter = search
@@ -523,17 +522,22 @@ const getPVReports = asyncHandler(async (req, res) => {
     filter.created_by = myId;
   }
 
-  const totalItems = await PVReport.countDocuments(filter);
+  if (cursor) {
+    filter.createdAt = { $lt: new Date(cursor) };
+  }
+
   const rows = await PVReport.find(filter)
     .populate('created_by', 'name')
     .populate('project', 'project_name')
-    .skip(skip)
-    .limit(limit)
     .sort({ createdAt: -1 })
+    .limit(limit + 1)
     .lean();
 
-  // ==== Inject progress per voucher_number ====
-  const voucherNumbers = [...new Set(rows.map((r) => r.voucher_number))];
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+  // ==== Inject progress per voucher_number (ASLI, TETAP) ====
+  const voucherNumbers = [...new Set(sliced.map((r) => r.voucher_number))];
 
   const [ers, logs] = await Promise.all([
     ExpenseRequest.find({ voucher_number: { $in: voucherNumbers } })
@@ -551,23 +555,21 @@ const getPVReports = asyncHandler(async (req, res) => {
     logs.map((l) => [l.voucher_number, (l.details || []).length])
   );
 
-  const data = rows.map((r) => ({
+  const data = sliced.map((r) => ({
     ...r,
-    // opsional: jumlah item di batch ini
     items_count: Array.isArray(r.items) ? r.items.length : 0,
-    // progress voucher (untuk tampil "3/10")
     progress: {
       approved: approvedMap.get(r.voucher_number) || 0,
       total: totalMap.get(r.voucher_number) || 0
     }
   }));
 
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
   res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data
+    data,
+    nextCursor,
+    hasMore
   });
 });
 

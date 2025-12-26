@@ -24,16 +24,12 @@ const createAnnouncement = asyncHandler(async (req, res) => {
 });
 
 const getAllAnnouncements = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
-  const { status, search } = req.query;
+  const { status, search, cursor } = req.query;
   const now = new Date();
 
   const filter = {};
 
-  // status filter
   if (status === 'active') {
     filter.activeFrom = { $lte: now };
     filter.$or = [{ expiresAt: null }, { expiresAt: { $gt: now } }];
@@ -41,7 +37,6 @@ const getAllAnnouncements = asyncHandler(async (req, res) => {
     filter.expiresAt = { $ne: null, $lte: now };
   }
 
-  // search by title/body
   if (search) {
     filter.$or = [
       { title: { $regex: search, $options: 'i' } },
@@ -49,22 +44,19 @@ const getAllAnnouncements = asyncHandler(async (req, res) => {
     ];
   }
 
-  const totalItems = await Announcement.countDocuments(filter);
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
 
-  const anns = await Announcement.find(filter)
+  const rows = await Announcement.find(filter)
     .populate('createdBy', 'name email')
-    .skip(skip)
-    .limit(limit)
     .sort({ createdAt: -1 })
+    .limit(limit + 1)
     .lean();
 
-  res.json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data: anns
-  });
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const deleteAnnouncement = asyncHandler(async (req, res) => {

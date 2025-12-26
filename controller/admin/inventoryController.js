@@ -248,6 +248,9 @@ const addStock = asyncHandler(async (req, res) => {
 });
 
 const getInventory = asyncHandler(async (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  const cursor = req.query.cursor;
+
   const { product, warehouse, shelf, condition, search, sort } = req.query;
 
   const filter = {};
@@ -255,6 +258,11 @@ const getInventory = asyncHandler(async (req, res) => {
   if (warehouse) filter.warehouse = warehouse;
   if (shelf) filter.shelf = shelf;
   if (condition) filter.condition = condition;
+
+  // 👉 cursor by createdAt
+  if (cursor) {
+    filter.createdAt = { $lt: new Date(cursor) };
+  }
 
   let sortOption = { createdAt: -1 };
   if (sort) {
@@ -267,10 +275,14 @@ const getInventory = asyncHandler(async (req, res) => {
     .populate('warehouse', 'warehouse_name')
     .populate('shelf', 'shelf_name')
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
+  const hasMore = inventory.length > limit;
+  const slicedInventory = hasMore ? inventory.slice(0, limit) : inventory;
+
   const inventoryWithImages = await Promise.all(
-    inventory.map(async (i) => {
+    slicedInventory.map(async (i) => {
       let imageUrl = null;
       if (i.product?.product_image?.key) {
         imageUrl = await getFileUrl(i.product.product_image.key);
@@ -279,7 +291,16 @@ const getInventory = asyncHandler(async (req, res) => {
     })
   );
 
-  res.status(200).json({ success: true, data: inventoryWithImages });
+  const nextCursor = hasMore
+    ? slicedInventory[slicedInventory.length - 1].createdAt
+    : null;
+
+  res.status(200).json({
+    success: true,
+    data: inventoryWithImages,
+    nextCursor,
+    hasMore
+  });
 });
 
 const getInventoryById = asyncHandler(async (req, res) => {

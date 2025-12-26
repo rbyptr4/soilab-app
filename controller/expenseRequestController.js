@@ -317,15 +317,14 @@ const addExpenseRequest = asyncHandler(async (req, res) => {
 
 /* ================= Read ================= */
 const getExpenseRequests = asyncHandler(async (req, res) => {
-  const { status, voucher_prefix, expense_type, search } = req.query;
-  const page = parseInt(req.query.page) || 1;
+  const { status, voucher_prefix, expense_type, search, cursor } = req.query;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
 
   const filter = {};
   if (status) filter.status = status;
   if (voucher_prefix) filter.voucher_prefix = voucher_prefix;
   if (expense_type) filter.expense_type = expense_type;
+
   if (search) {
     filter.$or = [
       { voucher_number: { $regex: search, $options: 'i' } },
@@ -339,23 +338,19 @@ const getExpenseRequests = asyncHandler(async (req, res) => {
     filter.name = me._id;
   }
 
-  const [totalItems, requests] = await Promise.all([
-    ExpenseRequest.countDocuments(filter),
-    ExpenseRequest.find(filter)
-      .populate('name', 'name')
-      .populate('project', 'project_name')
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 })
-  ]);
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data: requests
-  });
+  const rows = await ExpenseRequest.find(filter)
+    .populate('name', 'name')
+    .populate('project', 'project_name')
+    .sort({ createdAt: -1 })
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const getExpenseRequest = asyncHandler(async (req, res) => {
@@ -370,32 +365,26 @@ const getExpenseRequest = asyncHandler(async (req, res) => {
 });
 
 const getMyExpenseRequests = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const me = await Employee.findOne({ user: req.user.id }).select('_id name');
   if (!me) throwError('Karyawan tidak ditemukan', 404);
 
   const filter = { name: me._id };
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
 
-  const [totalItems, requests] = await Promise.all([
-    ExpenseRequest.countDocuments(filter),
-    ExpenseRequest.find(filter)
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 })
-      .populate('project', 'project_name')
-      .populate('name', 'name')
-  ]);
+  const rows = await ExpenseRequest.find(filter)
+    .sort({ createdAt: -1 })
+    .populate('project', 'project_name')
+    .populate('name', 'name')
+    .limit(limit + 1);
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data: requests
-  });
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const updateExpenseRequest = asyncHandler(async (req, res) => {

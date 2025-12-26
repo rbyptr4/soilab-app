@@ -1090,11 +1090,10 @@ const deleteReturnLoan = asyncHandler(async (req, res) => {
 });
 
 const getAllReturnLoan = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { status, project, search } = req.query;
+
   const filter = {};
   if (status) filter.status = status;
   if (project) filter['returned_items.project'] = project;
@@ -1113,10 +1112,11 @@ const getAllReturnLoan = asyncHandler(async (req, res) => {
     ];
   }
 
-  const totalItems = await ReturnLoan.countDocuments(filter);
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   const rows = await ReturnLoan.find(filter)
     .select(
-      'loan_number borrower returned_items report_date return_date status pv_locked'
+      'loan_number borrower returned_items report_date return_date status pv_locked createdAt'
     )
     .populate('borrower', 'name')
     .populate('returned_items.product', 'product_code brand')
@@ -1126,13 +1126,16 @@ const getAllReturnLoan = asyncHandler(async (req, res) => {
       'warehouse_name warehouse_code'
     )
     .populate('returned_items.shelf_return', 'shelf_name shelf_code')
-    .skip(skip)
-    .limit(limit)
     .sort({ createdAt: -1 })
+    .limit(limit + 1)
     .lean();
 
-  // Progress: total dari circulation vs final approved
-  const loanNumbers = [...new Set(rows.map((r) => r.loan_number))];
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+  // === LOGIC ASLI (UTUH) ===
+  const loanNumbers = [...new Set(sliced.map((r) => r.loan_number))];
+
   const circs = await LoanCirculation.find({
     loan_number: { $in: loanNumbers }
   })
@@ -1184,7 +1187,7 @@ const getAllReturnLoan = asyncHandler(async (req, res) => {
     ])
   );
 
-  const data = rows.map((r) => {
+  const data = sliced.map((r) => {
     const total = totalsMap.get(r.loan_number) || 0;
     const approved = approvedMap.get(r.loan_number) || 0;
 
@@ -1221,13 +1224,9 @@ const getAllReturnLoan = asyncHandler(async (req, res) => {
     };
   });
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const getReturnLoan = asyncHandler(async (req, res) => {

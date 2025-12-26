@@ -591,10 +591,8 @@ const deleteLoan = asyncHandler(async (req, res) => {
 });
 
 const getLoans = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { borrower, project, approval, nik, search, sort } = req.query;
 
   const filter = {};
@@ -612,13 +610,15 @@ const getLoans = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [field, order] = sort.split(':');
     sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const loans = await Loan.find(filter)
+  const rows = await Loan.find(filter)
     .populate([
       { path: 'borrower', select: 'name' },
       {
@@ -631,21 +631,15 @@ const getLoans = asyncHandler(async (req, res) => {
         ]
       }
     ])
-    .skip(skip)
-    .limit(limit)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  const totalItems = await Loan.countDocuments(filter);
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    sort: sortOption,
-    data: loans
-  });
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getLoan = asyncHandler(async (req, res) => {
@@ -798,9 +792,8 @@ const getLoan = asyncHandler(async (req, res) => {
 });
 
 const getLoansByEmployee = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const me = await Employee.findOne({ user: req.user.id })
     .select('_id name')
@@ -809,8 +802,10 @@ const getLoansByEmployee = asyncHandler(async (req, res) => {
 
   const { approval, project, search, sort } = req.query;
   const filter = { borrower: me._id };
+
   if (approval) filter.approval = approval;
   if (project) filter['borrowed_items.project'] = project;
+
   if (search) {
     filter.$or = [
       { loan_number: { $regex: search, $options: 'i' } },
@@ -820,39 +815,34 @@ const getLoansByEmployee = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [field, order] = String(sort).split(':');
     if (field) sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const [totalItems, loans] = await Promise.all([
-    Loan.countDocuments(filter),
-    Loan.find(filter)
-      .populate('borrower', 'name')
-      .populate({
-        path: 'borrowed_items',
-        populate: [
-          { path: 'product', select: 'brand product_code' },
-          { path: 'project', select: 'project_name' },
-          { path: 'warehouse_from', select: 'warehouse_name warehouse_code' },
-          { path: 'shelf_from', select: 'shelf_name shelf_code' }
-        ]
-      })
-      .skip(skip)
-      .limit(limit)
-      .sort(sortOption)
-      .lean()
-  ]);
+  const rows = await Loan.find(filter)
+    .populate('borrower', 'name')
+    .populate({
+      path: 'borrowed_items',
+      populate: [
+        { path: 'product', select: 'brand product_code' },
+        { path: 'project', select: 'project_name' },
+        { path: 'warehouse_from', select: 'warehouse_name warehouse_code' },
+        { path: 'shelf_from', select: 'shelf_name shelf_code' }
+      ]
+    })
+    .sort(sortOption)
+    .limit(limit + 1)
+    .lean();
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    sort: sortOption,
-    data: loans
-  });
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getWarehousesByProduct = asyncHandler(async (req, res) => {

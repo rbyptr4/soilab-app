@@ -370,26 +370,25 @@ const removeDailyProgress = asyncHandler(async (req, res) => {
 
 const getAllDailyProgress = asyncHandler(async (req, res) => {
   const { projectId } = req.params;
-  const { from, to, author, page = 1, limit = 20 } = req.query;
+  const { from, to, author, cursor, limit = 20 } = req.query;
 
   const project = await ProgressProject.findById(projectId).select('_id');
   if (!project) throwError('Project tidak ditemukan', 404);
 
   const q = { project: projectId };
+
   if (from) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from))
       throwError('Tanggal harus YYYY-MM-DD', 400);
     q.local_date = { ...(q.local_date || {}), $gte: from };
   }
+
   if (to) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(to))
       throwError('Tanggal harus YYYY-MM-DD', 400);
     q.local_date = { ...(q.local_date || {}), $lte: to };
   }
 
-  // Filter author:
-  // - "me" => terjemahkan ke Employee._id milik user saat ini
-  // - string ObjectId lain => dianggap Employee._id langsung
   if (author) {
     if (author === 'me') {
       const meEmpId = await resolveEmployeeId(req.user?.id);
@@ -399,28 +398,72 @@ const getAllDailyProgress = asyncHandler(async (req, res) => {
     }
   }
 
-  const pg = Math.max(1, Number(page));
+  if (cursor) {
+    const [date, id] = cursor.split('|');
+    q.$or = [
+      { local_date: { $lt: date } },
+      { local_date: date, _id: { $lt: id } }
+    ];
+  }
+
   const lim = Math.max(1, Math.min(100, Number(limit)));
 
-  const [items, total] = await Promise.all([
-    DailyProgress.find(q)
-      .sort({ local_date: -1, _id: -1 })
-      .skip((pg - 1) * lim)
-      .limit(lim)
-      .populate('author', 'name') // Employee
-      .lean(),
-    DailyProgress.countDocuments(q)
-  ]);
+  const rows = await DailyProgress.find(q)
+    .sort({ local_date: -1, _id: -1 })
+    .limit(lim + 1)
+    .populate('author', 'name')
+    .lean();
 
-  res.json({ items, page: pg, limit: lim, total });
+  const hasMore = rows.length > lim;
+  const sliced = hasMore ? rows.slice(0, lim) : rows;
+
+  const nextCursor = hasMore
+    ? `${sliced[sliced.length - 1].local_date}|${sliced[sliced.length - 1]._id}`
+    : null;
+
+  res.json({ items: sliced, nextCursor, hasMore });
 });
 
 const getProjects = asyncHandler(async (req, res) => {
-  const projects = await ProgressProject.find()
-    .select('project_name location start_date end_date progress client')
+  const limit = parseInt(req.query.limit) || 10;
+  const cursor = req.query.cursor;
+  const search = req.query.search || '';
+
+  const filter = search
+    ? {
+        $or: [
+          { project_name: { $regex: search, $options: 'i' } },
+          { location: { $regex: search, $options: 'i' } }
+        ]
+      }
+    : {};
+
+  if (req.query.client) {
+    filter.client = req.query.client;
+  }
+
+  if (cursor) {
+    filter.createdAt = { $lt: new Date(cursor) };
+  }
+
+  const projects = await ProgressProject.find(filter)
+    .select(
+      'project_name location start_date end_date progress client createdAt'
+    )
     .populate('client', 'name')
+    .sort({ createdAt: -1 })
+    .limit(limit + 1)
     .lean();
-  res.status(200).json(projects);
+
+  const hasMore = projects.length > limit;
+  const data = hasMore ? projects.slice(0, limit) : projects;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.status(200).json({
+    data,
+    nextCursor,
+    hasMore
+  });
 });
 
 const getProject = asyncHandler(async (req, res) => {
