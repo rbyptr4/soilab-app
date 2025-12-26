@@ -591,11 +591,12 @@ const deleteLoan = asyncHandler(async (req, res) => {
 });
 
 const getLoans = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
-  const { borrower, project, approval, nik, search, sort } = req.query;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
+  const { borrower, project, approval, nik, search, sort } = req.query;
   const filter = {};
+
   if (borrower) filter.borrower = borrower;
   if (nik) filter.nik = { $regex: nik, $options: 'i' };
   if (approval) filter.approval = approval;
@@ -610,36 +611,66 @@ const getLoans = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await Loan.find(filter)
-    .populate([
-      { path: 'borrower', select: 'name' },
-      {
-        path: 'borrowed_items',
-        populate: [
-          { path: 'product', select: 'brand product_code' },
-          { path: 'project', select: 'project_name' },
-          { path: 'warehouse_from', select: 'warehouse_name warehouse_code' },
-          { path: 'shelf_from', select: 'shelf_name shelf_code' }
-        ]
-      }
-    ])
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+  const baseQuery = Loan.find(filter).populate([
+    { path: 'borrower', select: 'name' },
+    {
+      path: 'borrowed_items',
+      populate: [
+        { path: 'product', select: 'brand product_code' },
+        { path: 'project', select: 'project_name' },
+        { path: 'warehouse_from', select: 'warehouse_name warehouse_code' },
+        { path: 'shelf_from', select: 'shelf_name shelf_code' }
+      ]
+    }
+  ]);
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  res.json({ sort: sortOption, data, nextCursor, hasMore });
+    const totalItems = await Loan.countDocuments(filter);
+    const data = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await baseQuery
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getLoan = asyncHandler(async (req, res) => {
@@ -792,8 +823,8 @@ const getLoan = asyncHandler(async (req, res) => {
 });
 
 const getLoansByEmployee = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
   const me = await Employee.findOne({ user: req.user.id })
     .select('_id name')
@@ -815,15 +846,13 @@ const getLoansByEmployee = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = String(sort).split(':');
-    if (field) sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = String(sort).split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await Loan.find(filter)
+  const baseQuery = Loan.find(filter)
     .populate('borrower', 'name')
     .populate({
       path: 'borrowed_items',
@@ -833,16 +862,49 @@ const getLoansByEmployee = asyncHandler(async (req, res) => {
         { path: 'warehouse_from', select: 'warehouse_name warehouse_code' },
         { path: 'shelf_from', select: 'shelf_name shelf_code' }
       ]
-    })
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+    });
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  res.json({ sort: sortOption, data, nextCursor, hasMore });
+    const totalItems = await Loan.countDocuments(filter);
+    const data = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await baseQuery
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getWarehousesByProduct = asyncHandler(async (req, res) => {

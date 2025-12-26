@@ -15,8 +15,8 @@ function computeOverallPercent(doc) {
 }
 
 const getProjects = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
   const search = req.query.search || '';
   const filter = search
@@ -28,34 +28,54 @@ const getProjects = asyncHandler(async (req, res) => {
       }
     : {};
 
-  if (req.query.client) {
-    filter.client = req.query.client;
+  if (req.query.client) filter.client = req.query.client;
+
+  const sortOption = { createdAt: -1 };
+
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
+
+    const totalItems = await ProgressProject.countDocuments(filter);
+    const data = await ProgressProject.find(filter)
+      .populate('client', 'name')
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
+
+    return res.json({
+      mode: 'paging',
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
   }
 
-  if (cursor) {
-    filter.createdAt = { $lt: new Date(cursor) };
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await ProgressProject.find(filter)
+      .populate('client', 'name')
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      mode: 'cursor',
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
   }
 
-  const raw = await ProgressProject.find(filter)
-    .populate('client', 'name')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
-
-  const hasMore = raw.length > limit;
-  const sliced = hasMore ? raw.slice(0, limit) : raw;
-
-  const data = sliced.map((d) => ({
-    ...d
-  }));
-
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
-
-  res.status(200).json({
-    data,
-    nextCursor,
-    hasMore
-  });
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getProject = asyncHandler(async (req, res) => {

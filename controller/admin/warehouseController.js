@@ -100,8 +100,8 @@ const getShelvesByWarehouse = asyncHandler(async (req, res) => {
 });
 
 const getWarehouses = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
   const { warehouse_code, warehouse_name, search, sort } = req.query;
 
   const filter = {};
@@ -116,36 +116,76 @@ const getWarehouses = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [f, o] = sort.split(':');
     sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await Warehouse.find(filter)
-    .populate('shelves', 'shelf_name shelf_code')
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const totalItems = await Warehouse.countDocuments(filter);
+    const rows = await Warehouse.find(filter)
+      .populate('shelves', 'shelf_name shelf_code')
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
 
-  const data = await Promise.all(
-    sliced.map(async (w) => {
-      let imageUrl = null;
-      if (w.warehouse_image?.key) {
-        imageUrl = await getFileUrl(w.warehouse_image.key);
-      }
-      return { ...w, warehouse_image_url: imageUrl };
-    })
-  );
+    const data = await Promise.all(
+      rows.map(async (w) => ({
+        ...w,
+        warehouse_image_url: w.warehouse_image?.key
+          ? await getFileUrl(w.warehouse_image.key)
+          : null
+      }))
+    );
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
 
-  res.json({ sort: sortOption, data, nextCursor, hasMore });
+  // ===== CURSOR =====
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await Warehouse.find(filter)
+      .populate('shelves', 'shelf_name shelf_code')
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = await Promise.all(
+      sliced.map(async (w) => ({
+        ...w,
+        warehouse_image_url: w.warehouse_image?.key
+          ? await getFileUrl(w.warehouse_image.key)
+          : null
+      }))
+    );
+
+    return res.json({
+      sort: sortOption,
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const removeWarehouse = asyncHandler(async (req, res) => {

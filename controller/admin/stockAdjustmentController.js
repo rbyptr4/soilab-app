@@ -3,8 +3,8 @@ const StockAdjustment = require('../../model/stockAdjustmentModel');
 const throwError = require('../../utils/throwError');
 
 const getStockAdjustments = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
   const { loan_number, product_code, start_date, end_date } = req.query;
 
   const filter = {};
@@ -22,35 +22,74 @@ const getStockAdjustments = asyncHandler(async (req, res) => {
     }
   }
 
-  if (cursor) {
-    filter.createdAt = {
-      ...(filter.createdAt || {}),
-      $lt: new Date(cursor)
-    };
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
+
+    const totalItems = await StockAdjustment.countDocuments(filter);
+    const rows = await StockAdjustment.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const data = rows.map((r) => ({
+      id: String(r._id),
+      date: r.createdAt,
+      document_number: r.correlation?.loan_number || null,
+      product_code: r.snapshot?.product_code || null,
+      brand: r.snapshot?.brand || null,
+      change: r.delta,
+      stock_after: r.after,
+      note: r.reason_note || r.reason_code || null
+    }));
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
   }
 
-  const rows = await StockAdjustment.find(filter)
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+  // ===== CURSOR =====
+  if (mode === 'cursor') {
+    if (req.query.cursor) {
+      filter.createdAt = {
+        ...(filter.createdAt || {}),
+        $lt: new Date(req.query.cursor)
+      };
+    }
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const rows = await StockAdjustment.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
 
-  const data = sliced.map((r) => ({
-    id: String(r._id),
-    date: r.createdAt,
-    document_number: r.correlation?.loan_number || null,
-    product_code: r.snapshot?.product_code || null,
-    brand: r.snapshot?.brand || null,
-    change: r.delta,
-    stock_after: r.after,
-    note: r.reason_note || r.reason_code || null
-  }));
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+    const data = sliced.map((r) => ({
+      id: String(r._id),
+      date: r.createdAt,
+      document_number: r.correlation?.loan_number || null,
+      product_code: r.snapshot?.product_code || null,
+      brand: r.snapshot?.brand || null,
+      change: r.delta,
+      stock_after: r.after,
+      note: r.reason_note || r.reason_code || null
+    }));
 
-  res.json({ data, nextCursor, hasMore });
+    return res.json({
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getStockAdjustment = asyncHandler(async (req, res) => {

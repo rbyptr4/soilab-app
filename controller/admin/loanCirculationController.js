@@ -55,8 +55,8 @@ async function attachImageUrls(circulation) {
 }
 
 const getLoanCirculations = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const { search, sort } = req.query;
 
   const filter = {};
@@ -67,39 +67,79 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = String(sort).split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await LoanCirculation.find(filter)
+  const baseQuery = LoanCirculation.find(filter)
     .select(
       '_id loan_number borrower inventory_manager phone loan_date_circulation borrowed_items.item_status createdAt'
     )
-    .populate('borrower', 'name')
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+    .populate('borrower', 'name');
 
-  const hasMore = rows.length > limit;
-  const slice = hasMore ? rows.slice(0, limit) : rows;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const data = slice.map((row) => ({
-    _id: row._id,
-    loan_number: row.loan_number,
-    loan_status: computeLoanStatus(row.borrowed_items),
-    borrower: row.borrower?.name || null,
-    inventory_manager: row.inventory_manager,
-    phone: row.phone,
-    loan_date_circulation: row.loan_date_circulation
-  }));
+    const totalItems = await LoanCirculation.countDocuments(filter);
+    const rows = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
 
-  const nextCursor = hasMore ? slice[slice.length - 1].createdAt : null;
+    const data = rows.map((row) => ({
+      _id: row._id,
+      loan_number: row.loan_number,
+      loan_status: computeLoanStatus(row.borrowed_items),
+      borrower: row.borrower?.name || null,
+      inventory_manager: row.inventory_manager,
+      phone: row.phone,
+      loan_date_circulation: row.loan_date_circulation
+    }));
 
-  res.json({ sort: sortOption, data, nextCursor, hasMore });
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await baseQuery
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = sliced.map((row) => ({
+      _id: row._id,
+      loan_number: row.loan_number,
+      loan_status: computeLoanStatus(row.borrowed_items),
+      borrower: row.borrower?.name || null,
+      inventory_manager: row.inventory_manager,
+      phone: row.phone,
+      loan_date_circulation: row.loan_date_circulation
+    }));
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getLoanCirculation = asyncHandler(async (req, res) => {

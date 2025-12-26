@@ -38,8 +38,8 @@ async function attachNotaUrls(doc) {
 const getExpenseLogs = asyncHandler(async (req, res) => {
   requireAdmin(req);
 
-  const limit = parseInt(req.query.limit) || 20;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
 
   const filter = {};
   if (req.query.voucher_number)
@@ -51,21 +51,50 @@ const getExpenseLogs = asyncHandler(async (req, res) => {
   if (req.query.requester && isObjectId(req.query.requester))
     filter.requester = req.query.requester;
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
-  const rows = await ExpenseLog.find(filter)
+  const baseQuery = ExpenseLog.find(filter)
     .select('-details.nota')
     .populate('requester', 'name')
-    .populate('project', 'project_name -_id')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+    .populate('project', 'project_name -_id');
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  res.json({ data, nextCursor, hasMore });
+    const totalItems = await ExpenseLog.countDocuments(filter);
+    const data = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+    const rows = await baseQuery
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getExpenseLog = asyncHandler(async (req, res) => {

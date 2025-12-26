@@ -248,10 +248,10 @@ const addStock = asyncHandler(async (req, res) => {
 });
 
 const getInventory = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
 
-  const { product, warehouse, shelf, condition, search, sort } = req.query;
+  const { product, warehouse, shelf, condition, sort } = req.query;
 
   const filter = {};
   if (product) filter.product = product;
@@ -259,48 +259,75 @@ const getInventory = asyncHandler(async (req, res) => {
   if (shelf) filter.shelf = shelf;
   if (condition) filter.condition = condition;
 
-  // 👉 cursor by createdAt
-  if (cursor) {
-    filter.createdAt = { $lt: new Date(cursor) };
-  }
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const inventory = await Inventory.find(filter)
+  const baseQuery = Inventory.find(filter)
     .populate('product', 'product_code brand type category product_image')
     .populate('warehouse', 'warehouse_name')
-    .populate('shelf', 'shelf_name')
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+    .populate('shelf', 'shelf_name');
 
-  const hasMore = inventory.length > limit;
-  const slicedInventory = hasMore ? inventory.slice(0, limit) : inventory;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const inventoryWithImages = await Promise.all(
-    slicedInventory.map(async (i) => {
-      let imageUrl = null;
-      if (i.product?.product_image?.key) {
-        imageUrl = await getFileUrl(i.product.product_image.key);
-      }
-      return { ...i, product_image_url: imageUrl };
-    })
-  );
+    const totalItems = await Inventory.countDocuments(filter);
+    const rows = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
 
-  const nextCursor = hasMore
-    ? slicedInventory[slicedInventory.length - 1].createdAt
-    : null;
+    const data = await Promise.all(
+      rows.map(async (i) => ({
+        ...i,
+        product_image_url: i.product?.product_image?.key
+          ? await getFileUrl(i.product.product_image.key)
+          : null
+      }))
+    );
 
-  res.status(200).json({
-    success: true,
-    data: inventoryWithImages,
-    nextCursor,
-    hasMore
-  });
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await baseQuery
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = await Promise.all(
+      sliced.map(async (i) => ({
+        ...i,
+        product_image_url: i.product?.product_image?.key
+          ? await getFileUrl(i.product.product_image.key)
+          : null
+      }))
+    );
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getInventoryById = asyncHandler(async (req, res) => {

@@ -1090,8 +1090,8 @@ const deleteReturnLoan = asyncHandler(async (req, res) => {
 });
 
 const getAllReturnLoan = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const { status, project, search } = req.query;
 
   const filter = {};
@@ -1112,9 +1112,7 @@ const getAllReturnLoan = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
-  const rows = await ReturnLoan.find(filter)
+  const baseQuery = ReturnLoan.find(filter)
     .select(
       'loan_number borrower returned_items report_date return_date status pv_locked createdAt'
     )
@@ -1125,108 +1123,48 @@ const getAllReturnLoan = asyncHandler(async (req, res) => {
       'returned_items.warehouse_return',
       'warehouse_name warehouse_code'
     )
-    .populate('returned_items.shelf_return', 'shelf_name shelf_code')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+    .populate('returned_items.shelf_return', 'shelf_name shelf_code');
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  // === LOGIC ASLI (UTUH) ===
-  const loanNumbers = [...new Set(sliced.map((r) => r.loan_number))];
+    const totalItems = await ReturnLoan.countDocuments(filter);
+    const rows = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 })
+      .lean();
 
-  const circs = await LoanCirculation.find({
-    loan_number: { $in: loanNumbers }
-  })
-    .select('loan_number borrowed_items.quantity')
-    .lean();
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data: rows
+    });
+  }
 
-  const totalsMap = new Map(
-    circs.map((c) => [
-      c.loan_number,
-      (c.borrowed_items || []).reduce(
-        (s, x) => s + (Number(x.quantity) || 0),
-        0
-      )
-    ])
-  );
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
 
-  const approvedAgg = await ReturnLoan.aggregate([
-    { $match: { loan_number: { $in: loanNumbers }, status: 'Dikembalikan' } },
-    { $unwind: '$returned_items' },
-    {
-      $group: {
-        _id: '$loan_number',
-        qty_ok: {
-          $sum: {
-            $cond: [
-              { $ne: ['$returned_items.condition_new', 'Hilang'] },
-              '$returned_items.quantity',
-              0
-            ]
-          }
-        },
-        qty_lost: {
-          $sum: {
-            $cond: [
-              { $eq: ['$returned_items.condition_new', 'Hilang'] },
-              '$returned_items.quantity',
-              0
-            ]
-          }
-        }
-      }
-    }
-  ]);
+    const rows = await baseQuery
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
 
-  const approvedMap = new Map(
-    approvedAgg.map((r) => [
-      r._id,
-      (Number(r.qty_ok) || 0) + (Number(r.qty_lost) || 0)
-    ])
-  );
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
 
-  const data = sliced.map((r) => {
-    const total = totalsMap.get(r.loan_number) || 0;
-    const approved = approvedMap.get(r.loan_number) || 0;
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
 
-    return {
-      _id: r._id,
-      loan_number: r.loan_number,
-      borrower_name: r.borrower?.name || '-',
-      report_date: r.report_date,
-      return_date: r.return_date,
-      total_item: r.returned_items?.length || 0,
-      status: r.status,
-      pv_locked: r.pv_locked || false,
-      progress: { approved, total },
-      progress_label: `${approved}/${total || 0}`,
-      returned_items: (r.returned_items || []).map((it) => ({
-        _id: it._id,
-        product: it.product?._id,
-        product_code: it.product?.product_code || it.product_code,
-        brand: it.product?.brand || it.brand,
-        quantity: it.quantity,
-        condition_new: it.condition_new,
-        project: it.project?._id,
-        project_name: it.project?.project_name,
-        warehouse_return: it.warehouse_return?._id,
-        warehouse_name: it.warehouse_return?.warehouse_code
-          ? `${it.warehouse_return.warehouse_code} — ${it.warehouse_return.warehouse_name}`
-          : it.warehouse_return?.warehouse_name,
-        shelf_return: it.shelf_return?._id,
-        shelf_name: it.shelf_return?.shelf_code
-          ? `${it.shelf_return.shelf_code} — ${it.shelf_return.shelf_name}`
-          : it.shelf_return?.shelf_name,
-        proof_image: it.proof_image || null
-      }))
-    };
-  });
-
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
-
-  res.json({ data, nextCursor, hasMore });
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getReturnLoan = asyncHandler(async (req, res) => {

@@ -370,63 +370,68 @@ const removeDailyProgress = asyncHandler(async (req, res) => {
 
 const getAllDailyProgress = asyncHandler(async (req, res) => {
   const { projectId } = req.params;
-  const { from, to, author, cursor, limit = 20 } = req.query;
+  const { from, to, author } = req.query;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
 
   const project = await ProgressProject.findById(projectId).select('_id');
   if (!project) throwError('Project tidak ditemukan', 404);
 
   const q = { project: projectId };
 
-  if (from) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from))
-      throwError('Tanggal harus YYYY-MM-DD', 400);
-    q.local_date = { ...(q.local_date || {}), $gte: from };
-  }
-
-  if (to) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(to))
-      throwError('Tanggal harus YYYY-MM-DD', 400);
-    q.local_date = { ...(q.local_date || {}), $lte: to };
-  }
+  if (from) q.local_date = { ...(q.local_date || {}), $gte: from };
+  if (to) q.local_date = { ...(q.local_date || {}), $lte: to };
 
   if (author) {
     if (author === 'me') {
-      const meEmpId = await resolveEmployeeId(req.user?.id);
-      q.author = meEmpId;
+      q.author = await resolveEmployeeId(req.user?.id);
     } else {
       q.author = author;
     }
   }
 
-  if (cursor) {
-    const [date, id] = cursor.split('|');
-    q.$or = [
-      { local_date: { $lt: date } },
-      { local_date: date, _id: { $lt: id } }
-    ];
+  const baseQuery = DailyProgress.find(q)
+    .sort({ local_date: -1, _id: -1 })
+    .populate('author', 'name');
+
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
+
+    const totalItems = await DailyProgress.countDocuments(q);
+    const items = await baseQuery.skip(skip).limit(limit).lean();
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      items
+    });
   }
 
-  const lim = Math.max(1, Math.min(100, Number(limit)));
+  if (mode === 'cursor') {
+    if (req.query.cursor) {
+      q._id = { $lt: req.query.cursor };
+    }
 
-  const rows = await DailyProgress.find(q)
-    .sort({ local_date: -1, _id: -1 })
-    .limit(lim + 1)
-    .populate('author', 'name')
-    .lean();
+    const rows = await baseQuery.limit(limit + 1).lean();
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
 
-  const hasMore = rows.length > lim;
-  const sliced = hasMore ? rows.slice(0, lim) : rows;
+    return res.json({
+      items,
+      nextCursor: hasMore ? items[items.length - 1]._id : null,
+      hasMore
+    });
+  }
 
-  const nextCursor = hasMore
-    ? `${sliced[sliced.length - 1].local_date}|${sliced[sliced.length - 1]._id}`
-    : null;
-
-  res.json({ items: sliced, nextCursor, hasMore });
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getProjects = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
   const search = req.query.search || '';
 
   const filter = search
@@ -438,32 +443,52 @@ const getProjects = asyncHandler(async (req, res) => {
       }
     : {};
 
-  if (req.query.client) {
-    filter.client = req.query.client;
+  if (req.query.client) filter.client = req.query.client;
+
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
+
+    const totalItems = await ProgressProject.countDocuments(filter);
+    const data = await ProgressProject.find(filter)
+      .populate('client', 'name')
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
   }
 
-  if (cursor) {
-    filter.createdAt = { $lt: new Date(cursor) };
+  // ===== CURSOR =====
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await ProgressProject.find(filter)
+      .populate('client', 'name')
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
   }
 
-  const projects = await ProgressProject.find(filter)
-    .select(
-      'project_name location start_date end_date progress client createdAt'
-    )
-    .populate('client', 'name')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
-
-  const hasMore = projects.length > limit;
-  const data = hasMore ? projects.slice(0, limit) : projects;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
-
-  res.status(200).json({
-    data,
-    nextCursor,
-    hasMore
-  });
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getProject = asyncHandler(async (req, res) => {

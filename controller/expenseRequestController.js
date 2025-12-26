@@ -315,12 +315,13 @@ const addExpenseRequest = asyncHandler(async (req, res) => {
   }
 });
 
-/* ================= Read ================= */
 const getExpenseRequests = asyncHandler(async (req, res) => {
-  const { status, voucher_prefix, expense_type, search, cursor } = req.query;
-  const limit = parseInt(req.query.limit) || 10;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
+  const { status, voucher_prefix, expense_type, search } = req.query;
   const filter = {};
+
   if (status) filter.status = status;
   if (voucher_prefix) filter.voucher_prefix = voucher_prefix;
   if (expense_type) filter.expense_type = expense_type;
@@ -338,19 +339,52 @@ const getExpenseRequests = asyncHandler(async (req, res) => {
     filter.name = me._id;
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+  const sortOption = { createdAt: -1 };
 
-  const rows = await ExpenseRequest.find(filter)
-    .populate('name', 'name')
-    .populate('project', 'project_name')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1);
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+    const totalItems = await ExpenseRequest.countDocuments(filter);
+    const data = await ExpenseRequest.find(filter)
+      .populate('name', 'name')
+      .populate('project', 'project_name')
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption);
 
-  res.json({ data, nextCursor, hasMore });
+    return res.json({
+      mode: 'paging',
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await ExpenseRequest.find(filter)
+      .populate('name', 'name')
+      .populate('project', 'project_name')
+      .sort(sortOption)
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      mode: 'cursor',
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getExpenseRequest = asyncHandler(async (req, res) => {
@@ -365,26 +399,59 @@ const getExpenseRequest = asyncHandler(async (req, res) => {
 });
 
 const getMyExpenseRequests = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
   const me = await Employee.findOne({ user: req.user.id }).select('_id name');
   if (!me) throwError('Karyawan tidak ditemukan', 404);
 
   const filter = { name: me._id };
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+  const sortOption = { createdAt: -1 };
 
-  const rows = await ExpenseRequest.find(filter)
-    .sort({ createdAt: -1 })
-    .populate('project', 'project_name')
-    .populate('name', 'name')
-    .limit(limit + 1);
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+    const totalItems = await ExpenseRequest.countDocuments(filter);
+    const data = await ExpenseRequest.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .populate('project', 'project_name')
+      .populate('name', 'name');
 
-  res.json({ data, nextCursor, hasMore });
+    return res.json({
+      mode: 'paging',
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await ExpenseRequest.find(filter)
+      .sort(sortOption)
+      .limit(limit + 1)
+      .populate('project', 'project_name')
+      .populate('name', 'name');
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      mode: 'cursor',
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const updateExpenseRequest = asyncHandler(async (req, res) => {

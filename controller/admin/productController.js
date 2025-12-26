@@ -162,8 +162,8 @@ const addProduct = asyncHandler(async (req, res) => {
 });
 
 const getProducts = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
   const { product_code, type, brand, category, search, sort } = req.query;
 
@@ -181,65 +181,134 @@ const getProducts = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const products = await Product.aggregate([
-    { $match: filter },
-    {
-      $lookup: {
-        from: 'inventories',
-        localField: '_id',
-        foreignField: 'product',
-        as: 'inventories'
-      }
-    },
-    {
-      $addFields: {
-        total_on_hand: { $sum: '$inventories.on_hand' },
-        total_on_loan: { $sum: '$inventories.on_loan' }
-      }
-    },
-    {
-      $project: {
-        product_code: 1,
-        category: 1,
-        brand: 1,
-        type: 1,
-        price: 1,
-        purchase_date: 1,
-        description: 1,
-        product_image: 1,
-        total_on_hand: 1,
-        total_on_loan: 1,
-        createdAt: 1
-      }
-    },
-    { $sort: sortOption },
-    { $limit: limit + 1 }
-  ]);
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = products.length > limit;
-  const sliced = hasMore ? products.slice(0, limit) : products;
+    const products = await Product.aggregate([
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'inventories',
+          localField: '_id',
+          foreignField: 'product',
+          as: 'inventories'
+        }
+      },
+      {
+        $addFields: {
+          total_on_hand: { $sum: '$inventories.on_hand' },
+          total_on_loan: { $sum: '$inventories.on_loan' }
+        }
+      },
+      {
+        $project: {
+          product_code: 1,
+          category: 1,
+          brand: 1,
+          type: 1,
+          price: 1,
+          purchase_date: 1,
+          description: 1,
+          product_image: 1,
+          total_on_hand: 1,
+          total_on_loan: 1,
+          createdAt: 1
+        }
+      },
+      { $sort: sortOption },
+      { $skip: skip },
+      { $limit: limit }
+    ]);
 
-  const productsWithUrl = await Promise.all(
-    sliced.map(async (p) => {
-      let imageUrl = null;
-      if (p.product_image?.key) {
-        imageUrl = await getFileUrl(p.product_image.key);
-      }
-      return { ...p, product_image_url: imageUrl };
-    })
-  );
+    const data = await Promise.all(
+      products.map(async (p) => ({
+        ...p,
+        product_image_url: p.product_image?.key
+          ? await getFileUrl(p.product_image.key)
+          : null
+      }))
+    );
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+    const totalItems = await Product.countDocuments(filter);
 
-  res.json({ sort: sortOption, data: productsWithUrl, nextCursor, hasMore });
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
+
+  // ===== CURSOR =====
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const products = await Product.aggregate([
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'inventories',
+          localField: '_id',
+          foreignField: 'product',
+          as: 'inventories'
+        }
+      },
+      {
+        $addFields: {
+          total_on_hand: { $sum: '$inventories.on_hand' },
+          total_on_loan: { $sum: '$inventories.on_loan' }
+        }
+      },
+      {
+        $project: {
+          product_code: 1,
+          category: 1,
+          brand: 1,
+          type: 1,
+          price: 1,
+          purchase_date: 1,
+          description: 1,
+          product_image: 1,
+          total_on_hand: 1,
+          total_on_loan: 1,
+          createdAt: 1
+        }
+      },
+      { $sort: sortOption },
+      { $limit: limit + 1 }
+    ]);
+
+    const hasMore = products.length > limit;
+    const sliced = hasMore ? products.slice(0, limit) : products;
+
+    const data = await Promise.all(
+      sliced.map(async (p) => ({
+        ...p,
+        product_image_url: p.product_image?.key
+          ? await getFileUrl(p.product_image.key)
+          : null
+      }))
+    );
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getProduct = asyncHandler(async (req, res) => {

@@ -93,6 +93,7 @@ function computeMetricsFromRap(rap) {
 }
 
 const getAllProfitReports = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
   const cursor = req.query.cursor;
   const { search, sort } = req.query;
@@ -106,61 +107,126 @@ const getAllProfitReports = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await ProfitReport.find(filter)
-    .select(
-      '_id project_name nilai_fix_pekerjaan nilai_pekerjaan nomor_kontrak client_name rap_id createdAt'
-    )
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const totalItems = await ProfitReport.countDocuments(filter);
 
-  const data = [];
-  for (const report of sliced) {
-    let rap =
-      (report.rap_id && (await RAP.findById(report.rap_id).lean())) ||
-      (await RAP.findOne({ nomor_kontrak: report.nomor_kontrak }).lean()) ||
-      (await RAP.findOne({ project_name: report.project_name }).lean());
+    const rows = await ProfitReport.find(filter)
+      .select(
+        '_id project_name nilai_fix_pekerjaan nilai_pekerjaan nomor_kontrak client_name rap_id'
+      )
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
-    const kontrak_value =
-      report.nilai_fix_pekerjaan ?? report.nilai_pekerjaan ?? 0;
+    const data = [];
+    for (const report of rows) {
+      let rap =
+        (report.rap_id && (await RAP.findById(report.rap_id).lean())) ||
+        (await RAP.findOne({ nomor_kontrak: report.nomor_kontrak }).lean()) ||
+        (await RAP.findOne({ project_name: report.project_name }).lean());
 
-    let rap_total = 0;
-    let total_aktual = 0;
-    let profit = 0;
+      const kontrak_value =
+        report.nilai_fix_pekerjaan ?? report.nilai_pekerjaan ?? 0;
 
-    if (rap) {
-      const m = computeMetricsFromRap(rap);
-      rap_total = m.total_budget;
-      total_aktual = m.total_aktual;
-      profit = m.profit;
+      let rap_total = 0;
+      let total_aktual = 0;
+      let profit = 0;
+
+      if (rap) {
+        const m = computeMetricsFromRap(rap);
+        rap_total = m.total_budget;
+        total_aktual = m.total_aktual;
+        profit = m.profit;
+      }
+
+      data.push({
+        _id: report._id,
+        project_name: report.project_name,
+        nomor_kontrak: report.nomor_kontrak,
+        client_name: report.client_name,
+        nilai_fix_pekerjaan: kontrak_value,
+        rap_total,
+        total_aktual,
+        profit
+      });
     }
 
-    data.push({
-      _id: report._id,
-      project_name: report.project_name,
-      nomor_kontrak: report.nomor_kontrak,
-      client_name: report.client_name,
-      nilai_fix_pekerjaan: kontrak_value,
-      rap_total,
-      total_aktual,
-      profit
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
     });
   }
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+  // ===== CURSOR (LOGIC ASLI KAMU) =====
+  if (mode === 'cursor') {
+    if (cursor) filter.createdAt = { $lt: new Date(cursor) };
 
-  res.json({ data, nextCursor, hasMore });
+    const rows = await ProfitReport.find(filter)
+      .select(
+        '_id project_name nilai_fix_pekerjaan nilai_pekerjaan nomor_kontrak client_name rap_id createdAt'
+      )
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = [];
+    for (const report of sliced) {
+      let rap =
+        (report.rap_id && (await RAP.findById(report.rap_id).lean())) ||
+        (await RAP.findOne({ nomor_kontrak: report.nomor_kontrak }).lean()) ||
+        (await RAP.findOne({ project_name: report.project_name }).lean());
+
+      const kontrak_value =
+        report.nilai_fix_pekerjaan ?? report.nilai_pekerjaan ?? 0;
+
+      let rap_total = 0;
+      let total_aktual = 0;
+      let profit = 0;
+
+      if (rap) {
+        const m = computeMetricsFromRap(rap);
+        rap_total = m.total_budget;
+        total_aktual = m.total_aktual;
+        profit = m.profit;
+      }
+
+      data.push({
+        _id: report._id,
+        project_name: report.project_name,
+        nomor_kontrak: report.nomor_kontrak,
+        client_name: report.client_name,
+        nilai_fix_pekerjaan: kontrak_value,
+        rap_total,
+        total_aktual,
+        profit
+      });
+    }
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 /* ============== DETAIL ============== */

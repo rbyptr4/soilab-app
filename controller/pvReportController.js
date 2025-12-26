@@ -502,8 +502,8 @@ const addPVReport = asyncHandler(async (req, res) => {
 /* ========================= Read (list & detail) ========================= */
 
 const getPVReports = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
   const search = req.query.search || '';
   const filter = search
@@ -516,61 +516,58 @@ const getPVReports = asyncHandler(async (req, res) => {
     : {};
 
   if (req.query.project) filter.project = req.query.project;
-
   if (req.user.role === 'karyawan') {
-    const myId = await getEmployeeId(req);
-    filter.created_by = myId;
+    filter.created_by = await getEmployeeId(req);
   }
 
-  if (cursor) {
-    filter.createdAt = { $lt: new Date(cursor) };
+  const sortOption = { createdAt: -1 };
+
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
+
+    const totalItems = await PVReport.countDocuments(filter);
+    const rows = await PVReport.find(filter)
+      .populate('created_by', 'name')
+      .populate('project', 'project_name')
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
+
+    return res.json({
+      mode: 'paging',
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data: rows
+    });
   }
 
-  const rows = await PVReport.find(filter)
-    .populate('created_by', 'name')
-    .populate('project', 'project_name')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const rows = await PVReport.find(filter)
+      .populate('created_by', 'name')
+      .populate('project', 'project_name')
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
 
-  // ==== Inject progress per voucher_number (ASLI, TETAP) ====
-  const voucherNumbers = [...new Set(sliced.map((r) => r.voucher_number))];
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
 
-  const [ers, logs] = await Promise.all([
-    ExpenseRequest.find({ voucher_number: { $in: voucherNumbers } })
-      .select('voucher_number details')
-      .lean(),
-    ExpenseLog.find({ voucher_number: { $in: voucherNumbers } })
-      .select('voucher_number details')
-      .lean()
-  ]);
+    return res.json({
+      mode: 'cursor',
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
 
-  const totalMap = new Map(
-    ers.map((er) => [er.voucher_number, (er.details || []).length])
-  );
-  const approvedMap = new Map(
-    logs.map((l) => [l.voucher_number, (l.details || []).length])
-  );
-
-  const data = sliced.map((r) => ({
-    ...r,
-    items_count: Array.isArray(r.items) ? r.items.length : 0,
-    progress: {
-      approved: approvedMap.get(r.voucher_number) || 0,
-      total: totalMap.get(r.voucher_number) || 0
-    }
-  }));
-
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
-
-  res.status(200).json({
-    data,
-    nextCursor,
-    hasMore
-  });
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getPVReport = asyncHandler(async (req, res) => {

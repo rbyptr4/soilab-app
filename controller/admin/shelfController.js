@@ -22,9 +22,10 @@ const addShelf = asyncHandler(async (req, res) => {
 });
 
 const getShelfs = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
   const search = req.query.search || '';
+
   const filter = search
     ? {
         $or: [
@@ -35,19 +36,51 @@ const getShelfs = asyncHandler(async (req, res) => {
     : {};
 
   if (req.query.warehouse) filter.warehouse = req.query.warehouse;
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
 
-  const rows = await Shelf.find(filter)
-    .populate('warehouse', 'warehouse_name warehouse_code')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+    const totalItems = await Shelf.countDocuments(filter);
+    const data = await Shelf.find(filter)
+      .populate('warehouse', 'warehouse_name warehouse_code')
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 })
+      .lean();
 
-  res.json({ data, nextCursor, hasMore });
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  // ===== CURSOR (ASLI) =====
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await Shelf.find(filter)
+      .populate('warehouse', 'warehouse_name warehouse_code')
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getShelf = asyncHandler(async (req, res) => {

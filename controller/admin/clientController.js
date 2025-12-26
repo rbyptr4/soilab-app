@@ -37,10 +37,10 @@ const addClient = asyncHandler(async (req, res) => {
 });
 
 const getClients = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
-
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const search = req.query.search || '';
+
   const filter = search
     ? {
         $or: [
@@ -50,18 +50,47 @@ const getClients = asyncHandler(async (req, res) => {
       }
     : {};
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+  const sortOption = { createdAt: -1 };
 
-  const rows = await Client.find(filter)
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+    const totalItems = await Client.countDocuments(filter);
+    const data = await Client.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
 
-  res.json({ data, nextCursor, hasMore });
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+    const rows = await Client.find(filter)
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getClient = asyncHandler(async (req, res) => {

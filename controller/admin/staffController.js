@@ -58,8 +58,8 @@ const addStaff = asyncHandler(async (req, res) => {
 });
 
 const getStaffs = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
   const { staff_name, position, search, sort } = req.query;
 
   const filter = {};
@@ -72,35 +72,72 @@ const getStaffs = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [f, o] = sort.split(':');
     sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await Staff.find(filter)
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const totalItems = await Staff.countDocuments(filter);
+    const rows = await Staff.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
 
-  const data = await Promise.all(
-    sliced.map(async (s) => {
-      let imgUrl = null;
-      let gifUrl = null;
-      if (s.img?.key) imgUrl = await getFileUrl(s.img.key, 86400);
-      if (s.gif?.key) gifUrl = await getFileUrl(s.gif.key, 86400);
-      return { ...s, imgUrl, gifUrl };
-    })
-  );
+    const data = await Promise.all(
+      rows.map(async (s) => ({
+        ...s,
+        imgUrl: s.img?.key ? await getFileUrl(s.img.key, 86400) : null,
+        gifUrl: s.gif?.key ? await getFileUrl(s.gif.key, 86400) : null
+      }))
+    );
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
 
-  res.json({ sort: sortOption, data, nextCursor, hasMore });
+  // ===== CURSOR =====
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await Staff.find(filter)
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = await Promise.all(
+      sliced.map(async (s) => ({
+        ...s,
+        imgUrl: s.img?.key ? await getFileUrl(s.img.key, 86400) : null,
+        gifUrl: s.gif?.key ? await getFileUrl(s.gif.key, 86400) : null
+      }))
+    );
+
+    return res.json({
+      sort: sortOption,
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getStaff = asyncHandler(async (req, res) => {

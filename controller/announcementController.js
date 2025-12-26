@@ -24,10 +24,11 @@ const createAnnouncement = asyncHandler(async (req, res) => {
 });
 
 const getAllAnnouncements = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const { status, search, cursor } = req.query;
-  const now = new Date();
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+  const { status, search } = req.query;
 
+  const now = new Date();
   const filter = {};
 
   if (status === 'active') {
@@ -44,19 +45,43 @@ const getAllAnnouncements = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
-  const rows = await Announcement.find(filter)
+  const baseQuery = Announcement.find(filter)
     .populate('createdBy', 'name email')
-    .sort({ createdAt: -1 })
-    .limit(limit + 1)
-    .lean();
+    .sort({ createdAt: -1 });
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  res.json({ data, nextCursor, hasMore });
+    const totalItems = await Announcement.countDocuments(filter);
+    const data = await baseQuery.skip(skip).limit(limit).lean();
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+
+    const rows = await baseQuery.limit(limit + 1).lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const deleteAnnouncement = asyncHandler(async (req, res) => {

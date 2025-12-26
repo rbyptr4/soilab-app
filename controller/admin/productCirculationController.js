@@ -3,9 +3,8 @@ const throwError = require('../../utils/throwError');
 const ProductCirculation = require('../../model/productCirculationModel');
 
 const getProductCirculations = asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
-
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const {
     product_code,
     warehouse_from,
@@ -33,78 +32,61 @@ const getProductCirculations = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = String(sort).split(':');
-    if (field) sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = String(sort).split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await ProductCirculation.find(filter)
+  const baseQuery = ProductCirculation.find(filter)
     .populate('warehouse_from', 'warehouse_name warehouse_code')
     .populate('warehouse_to', 'warehouse_name warehouse_code')
     .populate('shelf_from', 'shelf_name shelf_code')
     .populate('shelf_to', 'shelf_name shelf_code')
     .populate('product', 'product_name product_code')
-    .populate('moved_by', 'name')
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+    .populate('moved_by', 'name');
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const labelMovement = (code) => {
-    switch (code) {
-      case 'LOAN_OUT':
-        return 'Peminjaman (barang keluar)';
-      case 'RETURN_IN':
-        return 'Pengembalian (barang masuk)';
-      case 'TRANSFER':
-        return 'Transfer antar gudang';
-      case 'CONDITION_CHANGE':
-        return 'Perubahan kondisi';
-      case 'REOPEN_LOAN':
-        return 'Buka ulang data peminjaman';
-      default:
-        return code || '-';
-    }
-  };
+    const totalItems = await ProductCirculation.countDocuments(filter);
+    const rows = await baseQuery
+      .skip(skip)
+      .limit(limit)
+      .sort(sortOption)
+      .lean();
 
-  const data = sliced.map((r) => ({
-    id: String(r._id),
-    date: r.createdAt,
-    movement: labelMovement(r.movement_type),
-    product: {
-      code: r.product?.product_code || r.product_code || null,
-      name: r.product?.product_name || r.product_name || null
-    },
-    quantity: r.quantity,
-    from: {
-      warehouse: r.warehouse_from?.warehouse_name || null,
-      warehouse_code: r.warehouse_from?.warehouse_code || null,
-      shelf: r.shelf_from?.shelf_name || null,
-      shelf_code: r.shelf_from?.shelf_code || null
-    },
-    to: {
-      warehouse: r.warehouse_to?.warehouse_name || null,
-      warehouse_code: r.warehouse_to?.warehouse_code || null,
-      shelf: r.shelf_to?.shelf_name || null,
-      shelf_code: r.shelf_to?.shelf_code || null
-    },
-    condition: {
-      from: r.from_condition || r.condition || null,
-      to: r.to_condition || null
-    },
-    document_number: r.loan_number || null,
-    actor_name: r.moved_by_name || null,
-    note: r.reason_note || null
-  }));
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data: rows
+    });
+  }
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
 
-  res.json({ success: true, sort: sortOption, data, nextCursor, hasMore });
+    const rows = await baseQuery
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 // GET /product-circulations/:id

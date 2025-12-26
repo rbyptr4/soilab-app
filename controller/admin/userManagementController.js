@@ -8,8 +8,8 @@ const getAllUsers = asyncHandler(async (req, res) => {
     throwError('Anda tidak memiliki akses untuk data ini', 403);
   }
 
-  const limit = parseInt(req.query.limit) || 10;
-  const cursor = req.query.cursor;
+  const mode = req.query.mode || 'paging';
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const { email, name, phone, search, sort } = req.query;
 
   const filter = { role: { $nin: ['admin', 'bot'] } };
@@ -24,24 +24,46 @@ const getAllUsers = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [f, o] = sort.split(':');
     sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await User.find(filter)
-    .select('email name phone createdAt')
-    .sort(sortOption)
-    .limit(limit + 1);
+  const baseQuery = User.find(filter).select('email name phone createdAt');
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  res.json({ data, nextCursor, hasMore });
+    const totalItems = await User.countDocuments(filter);
+    const data = await baseQuery.skip(skip).limit(limit).sort(sortOption);
+
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      data
+    });
+  }
+
+  if (mode === 'cursor') {
+    if (req.query.cursor)
+      filter.createdAt = { $lt: new Date(req.query.cursor) };
+    const rows = await baseQuery.sort(sortOption).limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+
+    return res.json({
+      data,
+      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const deleteUser = asyncHandler(async (req, res) => {

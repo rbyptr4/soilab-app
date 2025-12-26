@@ -188,6 +188,7 @@ const addRAP = asyncHandler(async (req, res) => {
 });
 
 const getAllRAP = asyncHandler(async (req, res) => {
+  const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
   const cursor = req.query.cursor;
   const { project_name, nomor_kontrak, name, search, sort } = req.query;
@@ -205,37 +206,80 @@ const getAllRAP = asyncHandler(async (req, res) => {
     ];
   }
 
-  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
-
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const rows = await RAP.find(filter)
-    .populate('client', 'name')
-    .sort(sortOption)
-    .limit(limit + 1)
-    .lean();
+  // ===== PAGING =====
+  if (mode === 'paging') {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const skip = (page - 1) * limit;
 
-  const hasMore = rows.length > limit;
-  const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const totalItems = await RAP.countDocuments(filter);
 
-  const data = sliced.map((rap) => ({
-    _id: rap._id,
-    project_name: rap.project_name,
-    client: rap.client?.name || null,
-    location: rap.location,
-    nomor_kontrak: rap.nomor_kontrak_addendum || rap.nomor_kontrak,
-    nilai_pekerjaan: rap.nilai_fix_pekerjaan ?? rap.nilai_pekerjaan,
-    createdAt: rap.createdAt,
-    updatedAt: rap.updatedAt
-  }));
+    const rows = await RAP.find(filter)
+      .populate('client', 'name')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
-  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+    const data = rows.map((rap) => ({
+      _id: rap._id,
+      project_name: rap.project_name,
+      client: rap.client?.name || null,
+      location: rap.location,
+      nomor_kontrak: rap.nomor_kontrak_addendum || rap.nomor_kontrak,
+      nilai_pekerjaan: rap.nilai_fix_pekerjaan ?? rap.nilai_pekerjaan,
+      createdAt: rap.createdAt,
+      updatedAt: rap.updatedAt
+    }));
 
-  res.json({ sort: sortOption, data, nextCursor, hasMore });
+    return res.json({
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
+      data
+    });
+  }
+
+  // ===== CURSOR (ASLI) =====
+  if (mode === 'cursor') {
+    if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
+    const rows = await RAP.find(filter)
+      .populate('client', 'name')
+      .sort(sortOption)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = sliced.map((rap) => ({
+      _id: rap._id,
+      project_name: rap.project_name,
+      client: rap.client?.name || null,
+      location: rap.location,
+      nomor_kontrak: rap.nomor_kontrak_addendum || rap.nomor_kontrak,
+      nilai_pekerjaan: rap.nilai_fix_pekerjaan ?? rap.nilai_pekerjaan,
+      createdAt: rap.createdAt,
+      updatedAt: rap.updatedAt
+    }));
+
+    return res.json({
+      sort: sortOption,
+      data,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
+      hasMore
+    });
+  }
+
+  throwError('mode pagination tidak valid', 400);
 });
 
 const getRAP = asyncHandler(async (req, res) => {
