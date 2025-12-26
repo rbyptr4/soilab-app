@@ -78,7 +78,7 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
 
   let rows = await LoanCirculation.find(filter)
     .select(
-      'loan_number borrower inventory_manager phone loan_date_circulation borrowed_items.item_status'
+      '_id loan_number borrower inventory_manager phone loan_date_circulation borrowed_items.item_status'
     )
     .populate('borrower', 'name')
     .skip(skip)
@@ -87,6 +87,7 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
     .lean();
 
   const data = rows.map((row) => ({
+    _id: row._id,
     loan_number: row.loan_number,
     loan_status: computeLoanStatus(row.borrowed_items),
     borrower: row.borrower?.name || null,
