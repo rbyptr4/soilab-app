@@ -43,10 +43,8 @@ const addShowcase = asyncHandler(async (req, res) => {
 });
 
 const getShowcases = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { project_name, location, search, sort } = req.query;
 
   const filter = {};
@@ -60,38 +58,33 @@ const getShowcases = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const showcases = await Showcase.find(filter)
-    .skip(skip)
-    .limit(limit)
+  const rows = await Showcase.find(filter)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  const totalItems = await Showcase.countDocuments(filter);
-  const totalPages = Math.ceil(totalItems / limit);
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
 
-  const showcasesWithUrl = await Promise.all(
-    showcases.map(async (s) => {
+  const data = await Promise.all(
+    sliced.map(async (s) => {
       let imgUrl = null;
       if (s.img?.key) imgUrl = await getFileUrl(s.img.key, 86400);
-
       return { ...s, imgUrl };
     })
   );
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages,
-    sort: sortOption,
-    data: showcasesWithUrl
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getShowcase = asyncHandler(async (req, res) => {

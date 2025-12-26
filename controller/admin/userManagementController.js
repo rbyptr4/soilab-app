@@ -8,18 +8,14 @@ const getAllUsers = asyncHandler(async (req, res) => {
     throwError('Anda tidak memiliki akses untuk data ini', 403);
   }
 
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { email, name, phone, search, sort } = req.query;
 
   const filter = { role: { $nin: ['admin', 'bot'] } };
-
   if (email) filter.email = { $regex: email, $options: 'i' };
   if (name) filter.name = { $regex: name, $options: 'i' };
   if (phone) filter.phone = { $regex: phone, $options: 'i' };
-
   if (search) {
     filter.$or = [
       { email: { $regex: search, $options: 'i' } },
@@ -28,28 +24,24 @@ const getAllUsers = asyncHandler(async (req, res) => {
     ];
   }
 
-  // default sort by newest
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const users = await User.find(filter)
+  const rows = await User.find(filter)
     .select('email name phone createdAt')
-    .skip(skip)
-    .limit(limit)
-    .sort(sortOption);
+    .sort(sortOption)
+    .limit(limit + 1);
 
-  const total = await User.countDocuments(filter);
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
 
-  res.status(200).json({
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
-    users
-  });
+  res.json({ data, nextCursor, hasMore });
 });
 
 const deleteUser = asyncHandler(async (req, res) => {

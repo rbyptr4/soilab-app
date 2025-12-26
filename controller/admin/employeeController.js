@@ -109,9 +109,8 @@ const addEmployee = asyncHandler(async (req, res) => {
 });
 
 const getEmployees = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const { name, nik, employment_type, position, search, sort } = req.query;
 
@@ -120,6 +119,7 @@ const getEmployees = asyncHandler(async (req, res) => {
   if (nik) filter.nik = { $regex: nik, $options: 'i' };
   if (employment_type) filter.employment_type = employment_type;
   if (position) filter.position = position;
+
   if (search) {
     filter.$or = [
       { name: { $regex: search, $options: 'i' } },
@@ -128,31 +128,26 @@ const getEmployees = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [field, order] = sort.split(':');
     sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const employees = await Employee.find(filter)
-    .select('nik name phone position address employment_type')
+  const rows = await Employee.find(filter)
+    .select('nik name phone position address employment_type createdAt')
     .populate('user', 'email')
-    .skip(skip)
-    .limit(limit)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  const totalItems = await Employee.countDocuments(filter);
-  const totalPages = Math.ceil(totalItems / limit);
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages,
-    sort: sortOption,
-    data: employees
-  });
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getEmployee = asyncHandler(async (req, res) => {

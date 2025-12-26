@@ -55,9 +55,8 @@ async function attachImageUrls(circulation) {
 }
 
 const getLoanCirculations = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
   const { search, sort } = req.query;
 
   const filter = {};
@@ -68,25 +67,27 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = String(sort).split(':');
-    if (field) sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [field, order] = sort.split(':');
+    sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const totalItems = await LoanCirculation.countDocuments(filter);
-
-  let rows = await LoanCirculation.find(filter)
+  const rows = await LoanCirculation.find(filter)
     .select(
-      '_id loan_number borrower inventory_manager phone loan_date_circulation borrowed_items.item_status'
+      '_id loan_number borrower inventory_manager phone loan_date_circulation borrowed_items.item_status createdAt'
     )
     .populate('borrower', 'name')
-    .skip(skip)
-    .limit(limit)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  const data = rows.map((row) => ({
+  const hasMore = rows.length > limit;
+  const slice = hasMore ? rows.slice(0, limit) : rows;
+
+  const data = slice.map((row) => ({
     _id: row._id,
     loan_number: row.loan_number,
     loan_status: computeLoanStatus(row.borrowed_items),
@@ -96,14 +97,9 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
     loan_date_circulation: row.loan_date_circulation
   }));
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    sort: sortOption,
-    data
-  });
+  const nextCursor = hasMore ? slice[slice.length - 1].createdAt : null;
+
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getLoanCirculation = asyncHandler(async (req, res) => {

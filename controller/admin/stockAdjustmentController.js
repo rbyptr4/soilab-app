@@ -3,10 +3,8 @@ const StockAdjustment = require('../../model/stockAdjustmentModel');
 const throwError = require('../../utils/throwError');
 
 const getStockAdjustments = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { loan_number, product_code, start_date, end_date } = req.query;
 
   const filter = {};
@@ -24,33 +22,35 @@ const getStockAdjustments = asyncHandler(async (req, res) => {
     }
   }
 
-  const [totalItems, rows] = await Promise.all([
-    StockAdjustment.countDocuments(filter),
-    StockAdjustment.find(filter)
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 })
-      .lean()
-  ]);
+  if (cursor) {
+    filter.createdAt = {
+      ...(filter.createdAt || {}),
+      $lt: new Date(cursor)
+    };
+  }
 
-  const data = rows.map((r) => ({
+  const rows = await StockAdjustment.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(limit + 1)
+    .lean();
+
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+  const data = sliced.map((r) => ({
     id: String(r._id),
     date: r.createdAt,
     document_number: r.correlation?.loan_number || null,
-    product_code: r.snapshot?.product_code || null, // dipisah
-    brand: r.snapshot?.brand || null, // dipisah
+    product_code: r.snapshot?.product_code || null,
+    brand: r.snapshot?.brand || null,
     change: r.delta,
     stock_after: r.after,
     note: r.reason_note || r.reason_code || null
   }));
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const getStockAdjustment = asyncHandler(async (req, res) => {

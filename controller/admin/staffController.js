@@ -58,10 +58,8 @@ const addStaff = asyncHandler(async (req, res) => {
 });
 
 const getStaffs = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { staff_name, position, search, sort } = req.query;
 
   const filter = {};
@@ -70,46 +68,39 @@ const getStaffs = asyncHandler(async (req, res) => {
   if (search) {
     filter.$or = [
       { staff_name: { $regex: search, $options: 'i' } },
-      { position: { $regex: search, $options: 'i' } },
-      { description: { $regex: search, $options: 'i' } }
+      { position: { $regex: search, $options: 'i' } }
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const staffs = await Staff.find(filter)
-    .skip(skip)
-    .limit(limit)
+  const rows = await Staff.find(filter)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  const totalItems = await Staff.countDocuments(filter);
-  const totalPages = Math.ceil(totalItems / limit);
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
 
-  const staffsWithUrl = await Promise.all(
-    staffs.map(async (s) => {
+  const data = await Promise.all(
+    sliced.map(async (s) => {
       let imgUrl = null;
       let gifUrl = null;
-
       if (s.img?.key) imgUrl = await getFileUrl(s.img.key, 86400);
       if (s.gif?.key) gifUrl = await getFileUrl(s.gif.key, 86400);
-
       return { ...s, imgUrl, gifUrl };
     })
   );
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages,
-    sort: sortOption,
-    data: staffsWithUrl
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getStaff = asyncHandler(async (req, res) => {

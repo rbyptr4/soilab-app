@@ -100,10 +100,8 @@ const getShelvesByWarehouse = asyncHandler(async (req, res) => {
 });
 
 const getWarehouses = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { warehouse_code, warehouse_name, search, sort } = req.query;
 
   const filter = {};
@@ -114,29 +112,29 @@ const getWarehouses = asyncHandler(async (req, res) => {
   if (search) {
     filter.$or = [
       { warehouse_code: { $regex: search, $options: 'i' } },
-      { warehouse_name: { $regex: search, $options: 'i' } },
-      { description: { $regex: search, $options: 'i' } }
+      { warehouse_name: { $regex: search, $options: 'i' } }
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = sort.split(':');
-    sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
   }
 
-  const warehouses = await Warehouse.find(filter)
+  const rows = await Warehouse.find(filter)
     .populate('shelves', 'shelf_name shelf_code')
-    .skip(skip)
-    .limit(limit)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  const totalItems = await Warehouse.countDocuments(filter);
-  const totalPages = Math.ceil(totalItems / limit);
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
 
-  const warehousesWithUrls = await Promise.all(
-    warehouses.map(async (w) => {
+  const data = await Promise.all(
+    sliced.map(async (w) => {
       let imageUrl = null;
       if (w.warehouse_image?.key) {
         imageUrl = await getFileUrl(w.warehouse_image.key);
@@ -145,14 +143,9 @@ const getWarehouses = asyncHandler(async (req, res) => {
     })
   );
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages,
-    sort: sortOption,
-    data: warehousesWithUrls
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const removeWarehouse = asyncHandler(async (req, res) => {

@@ -92,12 +92,9 @@ function computeMetricsFromRap(rap) {
   };
 }
 
-/* ============== LIST ============== */
 const getAllProfitReports = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { search, sort } = req.query;
 
   const filter = {};
@@ -109,43 +106,31 @@ const getAllProfitReports = asyncHandler(async (req, res) => {
     ];
   }
 
-  const WHITELIST_SORT = new Set([
-    'createdAt',
-    'project_name',
-    'nomor_kontrak',
-    'client_name'
-  ]);
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = String(sort).split(':');
-    if (WHITELIST_SORT.has(field))
-      sortOption = { [field]: order === 'asc' ? 1 : -1 };
+    const [field, order] = sort.split(':');
+    sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const totalItems = await ProfitReport.countDocuments(filter);
-  const reports = await ProfitReport.find(filter)
+  const rows = await ProfitReport.find(filter)
     .select(
-      '_id project_name nilai_fix_pekerjaan nilai_pekerjaan nomor_kontrak client_name rap_id'
+      '_id project_name nilai_fix_pekerjaan nilai_pekerjaan nomor_kontrak client_name rap_id createdAt'
     )
-    .skip(skip)
-    .limit(limit)
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
+
   const data = [];
-  for (const report of reports) {
-    let rap = null;
-    if (
-      report.rap_id &&
-      mongoose.Types.ObjectId.isValid(String(report.rap_id))
-    ) {
-      rap = await RAP.findById(report.rap_id).lean();
-    }
-    if (!rap) {
-      rap =
-        (await RAP.findOne({ nomor_kontrak: report.nomor_kontrak }).lean()) ||
-        (await RAP.findOne({ project_name: report.project_name }).lean());
-    }
+  for (const report of sliced) {
+    let rap =
+      (report.rap_id && (await RAP.findById(report.rap_id).lean())) ||
+      (await RAP.findOne({ nomor_kontrak: report.nomor_kontrak }).lean()) ||
+      (await RAP.findOne({ project_name: report.project_name }).lean());
 
     const kontrak_value =
       report.nilai_fix_pekerjaan ?? report.nilai_pekerjaan ?? 0;
@@ -173,13 +158,9 @@ const getAllProfitReports = asyncHandler(async (req, res) => {
     });
   }
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 /* ============== DETAIL ============== */

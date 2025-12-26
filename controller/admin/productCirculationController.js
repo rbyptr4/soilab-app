@@ -3,9 +3,8 @@ const throwError = require('../../utils/throwError');
 const ProductCirculation = require('../../model/productCirculationModel');
 
 const getProductCirculations = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const {
     product_code,
@@ -34,26 +33,27 @@ const getProductCirculations = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [field, order] = String(sort).split(':');
     if (field) sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const [totalItems, rows] = await Promise.all([
-    ProductCirculation.countDocuments(filter),
-    ProductCirculation.find(filter)
-      .populate('warehouse_from', 'warehouse_name warehouse_code')
-      .populate('warehouse_to', 'warehouse_name warehouse_code')
-      .populate('shelf_from', 'shelf_name shelf_code')
-      .populate('shelf_to', 'shelf_name shelf_code')
-      .populate('product', 'product_name product_code')
-      .populate('moved_by', 'name')
-      .skip(skip)
-      .limit(limit)
-      .sort(sortOption)
-      .lean()
-  ]);
+  const rows = await ProductCirculation.find(filter)
+    .populate('warehouse_from', 'warehouse_name warehouse_code')
+    .populate('warehouse_to', 'warehouse_name warehouse_code')
+    .populate('shelf_from', 'shelf_name shelf_code')
+    .populate('shelf_to', 'shelf_name shelf_code')
+    .populate('product', 'product_name product_code')
+    .populate('moved_by', 'name')
+    .sort(sortOption)
+    .limit(limit + 1)
+    .lean();
+
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
 
   const labelMovement = (code) => {
     switch (code) {
@@ -72,8 +72,8 @@ const getProductCirculations = asyncHandler(async (req, res) => {
     }
   };
 
-  const data = rows.map((r) => ({
-    id: String(r._id), // <— penting buat get detail
+  const data = sliced.map((r) => ({
+    id: String(r._id),
     date: r.createdAt,
     movement: labelMovement(r.movement_type),
     product: {
@@ -102,15 +102,9 @@ const getProductCirculations = asyncHandler(async (req, res) => {
     note: r.reason_note || null
   }));
 
-  res.status(200).json({
-    success: true,
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    sort: sortOption,
-    data
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ success: true, sort: sortOption, data, nextCursor, hasMore });
 });
 
 // GET /product-circulations/:id

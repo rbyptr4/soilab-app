@@ -187,12 +187,9 @@ const addRAP = asyncHandler(async (req, res) => {
   }
 });
 
-// LIST (pagination + filter + sort)
 const getAllRAP = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
-
+  const cursor = req.query.cursor;
   const { project_name, nomor_kontrak, name, search, sort } = req.query;
 
   const filter = {};
@@ -208,55 +205,37 @@ const getAllRAP = asyncHandler(async (req, res) => {
     ];
   }
 
-  const WHITELIST_SORT = new Set([
-    'createdAt',
-    'project_name',
-    'nomor_kontrak',
-    'nilai_pekerjaan',
-    'nilai_fix_pekerjaan'
-  ]);
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
-    const [field, order] = String(sort).split(':');
-    if (WHITELIST_SORT.has(field)) {
-      sortOption = { [field]: order === 'asc' ? 1 : -1 };
-    }
+    const [field, order] = sort.split(':');
+    sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  const totalItems = await RAP.countDocuments(filter);
-  const raps = await RAP.find(filter)
-    .select(
-      'project_name client lokation nomor_kontrak nilai_pekerjaan nilai_fix_pekerjaan createdAt updatedAt'
-    )
-    .populate('client', 'name') // ambil nama client aja
-    .skip(skip)
-    .limit(limit)
+  const rows = await RAP.find(filter)
+    .populate('client', 'name')
     .sort(sortOption)
+    .limit(limit + 1)
     .lean();
 
-  // fallback nilai_pekerjaan_fix → nilai_pekerjaan
-  const data = raps.map((rap) => ({
+  const hasMore = rows.length > limit;
+  const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+  const data = sliced.map((rap) => ({
     _id: rap._id,
     project_name: rap.project_name,
     client: rap.client?.name || null,
     location: rap.location,
     nomor_kontrak: rap.nomor_kontrak_addendum || rap.nomor_kontrak,
-    nilai_pekerjaan:
-      rap.nilai_fix_pekerjaan != null
-        ? rap.nilai_fix_pekerjaan
-        : rap.nilai_pekerjaan,
+    nilai_pekerjaan: rap.nilai_fix_pekerjaan ?? rap.nilai_pekerjaan,
     createdAt: rap.createdAt,
     updatedAt: rap.updatedAt
   }));
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    sort: sortOption,
-    data
-  });
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
+
+  res.json({ sort: sortOption, data, nextCursor, hasMore });
 });
 
 const getRAP = asyncHandler(async (req, res) => {

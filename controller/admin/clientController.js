@@ -37,9 +37,8 @@ const addClient = asyncHandler(async (req, res) => {
 });
 
 const getClients = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const search = req.query.search || '';
   const filter = search
@@ -51,20 +50,18 @@ const getClients = asyncHandler(async (req, res) => {
       }
     : {};
 
-  const totalItems = await Client.countDocuments(filter);
-  const data = await Client.find(filter)
-    .skip(skip)
-    .limit(limit)
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
+  const rows = await Client.find(filter)
     .sort({ createdAt: -1 })
+    .limit(limit + 1)
     .lean();
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data
-  });
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const getClient = asyncHandler(async (req, res) => {

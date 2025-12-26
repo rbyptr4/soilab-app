@@ -35,13 +35,11 @@ async function attachNotaUrls(doc) {
 
 /* =============== Controllers =============== */
 
-// LIST (admin only)
 const getExpenseLogs = asyncHandler(async (req, res) => {
   requireAdmin(req);
 
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const filter = {};
   if (req.query.voucher_number)
@@ -53,25 +51,21 @@ const getExpenseLogs = asyncHandler(async (req, res) => {
   if (req.query.requester && isObjectId(req.query.requester))
     filter.requester = req.query.requester;
 
-  const [totalItems, logs] = await Promise.all([
-    ExpenseLog.countDocuments(filter),
-    ExpenseLog.find(filter)
-      .select('-details.nota') // biar ringan di list
-      .populate('requester', 'name')
-      .populate('project', 'project_name -_id')
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 })
-      .lean()
-  ]);
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages: Math.ceil(totalItems / limit),
-    data: logs
-  });
+  const rows = await ExpenseLog.find(filter)
+    .select('-details.nota')
+    .populate('requester', 'name')
+    .populate('project', 'project_name -_id')
+    .sort({ createdAt: -1 })
+    .limit(limit + 1)
+    .lean();
+
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].createdAt : null;
+
+  res.json({ data, nextCursor, hasMore });
 });
 
 const getExpenseLog = asyncHandler(async (req, res) => {

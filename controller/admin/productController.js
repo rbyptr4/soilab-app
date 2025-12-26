@@ -162,9 +162,8 @@ const addProduct = asyncHandler(async (req, res) => {
 });
 
 const getProducts = asyncHandler(async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const skip = (page - 1) * limit;
+  const cursor = req.query.cursor;
 
   const { product_code, type, brand, category, search, sort } = req.query;
 
@@ -182,13 +181,14 @@ const getProducts = asyncHandler(async (req, res) => {
     ];
   }
 
+  if (cursor) filter.createdAt = { $lt: new Date(cursor) };
+
   let sortOption = { createdAt: -1 };
   if (sort) {
     const [field, order] = sort.split(':');
     sortOption = { [field]: order === 'asc' ? 1 : -1 };
   }
 
-  // aggregate join ke Inventory
   const products = await Product.aggregate([
     { $match: filter },
     {
@@ -216,39 +216,30 @@ const getProducts = asyncHandler(async (req, res) => {
         description: 1,
         product_image: 1,
         total_on_hand: 1,
-        total_on_loan: 1
+        total_on_loan: 1,
+        createdAt: 1
       }
     },
     { $sort: sortOption },
-    { $skip: skip },
-    { $limit: limit }
+    { $limit: limit + 1 }
   ]);
 
-  // generate signed URL utk setiap gambar produk
+  const hasMore = products.length > limit;
+  const sliced = hasMore ? products.slice(0, limit) : products;
+
   const productsWithUrl = await Promise.all(
-    products.map(async (p) => {
+    sliced.map(async (p) => {
       let imageUrl = null;
       if (p.product_image?.key) {
-        imageUrl = await getFileUrl(p.product_image.key); // expired 5 menit
+        imageUrl = await getFileUrl(p.product_image.key);
       }
-      return {
-        ...p,
-        product_image_url: imageUrl
-      };
+      return { ...p, product_image_url: imageUrl };
     })
   );
 
-  const totalItems = await Product.countDocuments(filter);
-  const totalPages = Math.ceil(totalItems / limit);
+  const nextCursor = hasMore ? sliced[sliced.length - 1].createdAt : null;
 
-  res.status(200).json({
-    page,
-    limit,
-    totalItems,
-    totalPages,
-    sort: sortOption,
-    data: productsWithUrl
-  });
+  res.json({ sort: sortOption, data: productsWithUrl, nextCursor, hasMore });
 });
 
 const getProduct = asyncHandler(async (req, res) => {
