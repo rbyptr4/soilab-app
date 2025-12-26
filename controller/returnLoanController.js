@@ -241,8 +241,6 @@ async function buildReturnedMap(loan_number, { session } = {}) {
 async function recomputeCirculationAndLoan({ session, loan, circulation }) {
   const map = await buildReturnedMap(loan.loan_number, { session });
 
-  const DONE_STATUSES = new Set(['Dikembalikan', 'Hilang', 'Selesai']);
-
   let allDone = true;
 
   console.log('=== RECOMPUTE LOAN ===', loan.loan_number);
@@ -256,16 +254,19 @@ async function recomputeCirculationAndLoan({ session, loan, circulation }) {
     const status = decideItemStatus(qty, returned, lost);
     it.item_status = status;
 
+    const remaining = qty - returned - lost;
+
     console.log({
       circ_item_id: String(it._id),
       product_code: it.product_code,
       qty_pinjam: qty,
       returned,
       lost,
+      remaining,
       status
     });
 
-    if (!DONE_STATUSES.has(status)) {
+    if (remaining > 0) {
       allDone = false;
     }
   }
@@ -647,13 +648,12 @@ async function finalizeReturnLoanCore(session, { loan, doc, actor }) {
     await ProductCirculation.insertMany(circulationLogs, { session });
   }
 
-  await recomputeCirculationAndLoan({ session, loan, circulation });
-
   doc.status = 'Dikembalikan';
   doc.needs_review = !!hasLost;
   doc.loan_locked = true;
   await doc.save({ session });
 
+  await recomputeCirculationAndLoan({ session, loan, circulation });
   await Loan.updateOne(
     { _id: loan._id },
     { $set: { loan_locked: true } },
