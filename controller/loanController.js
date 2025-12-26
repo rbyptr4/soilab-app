@@ -76,8 +76,7 @@ const createLoan = asyncHandler(async (req, res) => {
     address,
     position,
     phone,
-    inventory_manager,
-    warehouse_to
+    inventory_manager
   } = req.body || {};
 
   const items = parseBorrowedItems(req.body.borrowed_items);
@@ -91,7 +90,6 @@ const createLoan = asyncHandler(async (req, res) => {
     !position ||
     !phone ||
     !inventory_manager ||
-    !warehouse_to ||
     items.length === 0
   ) {
     throwError('Field wajib belum lengkap', 400);
@@ -192,7 +190,6 @@ const createLoan = asyncHandler(async (req, res) => {
           loan_date,
           pickup_date,
           inventory_manager,
-          warehouse_to,
           borrowed_items: processed,
           approval: 'Diproses',
           circulation_status: computeCirculationStatus('Diproses'),
@@ -241,7 +238,6 @@ const updateLoan = asyncHandler(async (req, res) => {
       'position',
       'phone',
       'inventory_manager',
-      'warehouse_to',
       'note'
     ];
     for (const f of fields) {
@@ -367,7 +363,6 @@ const approveLoan = asyncHandler(async (req, res) => {
       condition: it.condition_at_borrow,
       warehouse_from: it.warehouse_from,
       shelf_from: it.shelf_from,
-      warehouse_to: loan.warehouse_to,
       item_status: 'Dipinjam',
       return_date_circulation: null
     }));
@@ -379,7 +374,6 @@ const approveLoan = asyncHandler(async (req, res) => {
           borrower: loan.borrower,
           phone: loan.phone,
           inventory_manager: loan.inventory_manager,
-          warehouse_to: loan.warehouse_to,
           shelf_to: null,
           loan_date_circulation: loan.pickup_date,
           borrowed_items: cirItems
@@ -627,7 +621,6 @@ const getLoans = asyncHandler(async (req, res) => {
   const loans = await Loan.find(filter)
     .populate([
       { path: 'borrower', select: 'name' },
-      { path: 'warehouse_to', select: 'warehouse_name warehouse_code' },
       {
         path: 'borrowed_items',
         populate: [
@@ -658,7 +651,6 @@ const getLoans = asyncHandler(async (req, res) => {
 const getLoan = asyncHandler(async (req, res) => {
   const loan = await Loan.findById(req.params.id)
     .populate('borrower', 'name')
-    .populate('warehouse_to', 'warehouse_name warehouse_code')
     .populate({
       path: 'borrowed_items',
       populate: [
@@ -838,7 +830,6 @@ const getLoansByEmployee = asyncHandler(async (req, res) => {
     Loan.countDocuments(filter),
     Loan.find(filter)
       .populate('borrower', 'name')
-      .populate('warehouse_to', 'warehouse_name')
       .populate({
         path: 'borrowed_items',
         populate: [

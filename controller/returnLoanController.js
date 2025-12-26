@@ -245,6 +245,8 @@ async function recomputeCirculationAndLoan({ session, loan, circulation }) {
 
   let allDone = true;
 
+  console.log('=== RECOMPUTE LOAN ===', loan.loan_number);
+
   for (const it of circulation.borrowed_items || []) {
     const qty = Number(it.quantity) || 0;
     const agg = map.get(String(it._id)) || { returned: 0, lost: 0 };
@@ -254,10 +256,21 @@ async function recomputeCirculationAndLoan({ session, loan, circulation }) {
     const status = decideItemStatus(qty, returned, lost);
     it.item_status = status;
 
+    console.log({
+      circ_item_id: String(it._id),
+      product_code: it.product_code,
+      qty_pinjam: qty,
+      returned,
+      lost,
+      status
+    });
+
     if (!DONE_STATUSES.has(status)) {
       allDone = false;
     }
   }
+
+  console.log('ALL DONE ?', allDone);
 
   await circulation.save({ session });
 

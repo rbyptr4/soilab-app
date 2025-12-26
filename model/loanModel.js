@@ -28,7 +28,6 @@ const loanSchema = new Schema(
       required: true,
       enum: ['Owan H.', 'Teguh F.', 'Korlap']
     },
-    warehouse_to: { type: ObjectId, ref: 'Warehouse', required: true },
 
     // item batch
     borrowed_items: [
