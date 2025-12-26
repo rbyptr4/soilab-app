@@ -45,7 +45,7 @@ app.use(
   })
 );
 app.options('*', cors());
-app.use(authDebugLogger);
+// app.use(authDebugLogger);
 
 // Static assets
 app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
