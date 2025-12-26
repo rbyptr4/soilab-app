@@ -1,4 +1,3 @@
-const Employee = require('../model/employeeModel');
 const asyncHandler = require('express-async-handler');
 const throwError = require('../utils/throwError');
 
@@ -12,7 +11,5 @@ const checkEmployeePageAccess = (page) =>
 
     next();
   });
-
-module.exports = checkEmployeePageAccess;
 
 module.exports = { checkEmployeePageAccess };

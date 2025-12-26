@@ -94,6 +94,10 @@ app.use(
 );
 
 app.use('/employee/projects', require('./routes/employee/dailyProgressRouter'));
+app.use(
+  '/employee/dashboard',
+  require('./routes/employee/employeeDashboardRouter')
+);
 app.use('/employee/profile', require('./routes/employee/editProfileRouter'));
 
 // ---------- CHAT ROUTES (protected) ----------
