@@ -7,3 +7,11 @@ exports.constants = {
   SERVER_ERROR: 500,
   BAD_GATEWAY: 502
 };
+
+exports.employeePages = [
+  'dailyprogress',
+  'loan',
+  'returnloan',
+  'expense',
+  'expenserequest'
+];

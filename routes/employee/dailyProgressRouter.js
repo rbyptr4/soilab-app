@@ -9,6 +9,11 @@ const {
   getProjects,
   getAllDailyProgress
 } = require('../../controller/employee/dailyProgressController');
+const {
+  checkEmployeePageAccess
+} = require('../../middleware/pageAccessHandler');
+
+router.use(checkEmployeePageAccess('dailyprogress'));
 
 router.get('/all-project', getProjects);
 router.get('/:id', getProject);

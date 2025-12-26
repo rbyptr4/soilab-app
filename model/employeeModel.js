@@ -12,6 +12,12 @@ const employeeSchema = new mongoose.Schema({
     required: true,
     enum: ['Freelance', 'Karyawan']
   },
+  pages: {
+    type: [String],
+    enum: ['dailyprogress', 'loan', 'returnloan', 'expense', 'expenserequest'],
+    default: []
+  },
+
   religion: {
     type: String,
     enum: ['Islam', 'Protestan', 'Katolik', 'Budha', 'Hindu', 'Konghucu']

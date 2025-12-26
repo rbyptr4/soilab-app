@@ -2,6 +2,7 @@ const express = require('express');
 const Router = express.Router();
 const validate = require('../middleware/validations/validate');
 const { checkDuplicate } = require('../middleware/checkDuplicate');
+const { checkEmployeePageAccess } = require('../middleware/pageAccessHandler');
 const Loan = require('../model/loanModel');
 const {
   createLoanSchema,
@@ -37,7 +38,7 @@ Router.post(
   .get('/employee', getEmployee)
   .get('/all-product', getAllProduct)
   .get('/all-warehouse', getAllWarehouse)
-  .get('/my-loans', getLoansByEmployee)
+  .get('/my-loans', checkEmployeePageAccess('loan'), getLoansByEmployee)
   .get('/all-project', getAllProject);
 
 Router.get('/products/:productId/warehouses', getWarehousesByProduct);

@@ -14,6 +14,8 @@ const Employee = require('../../model/employeeModel');
 const Loan = require('../../model/loanModel');
 const mongoose = require('mongoose');
 
+const { employeePages } = require('../../constants');
+
 const addEmployee = asyncHandler(async (req, res) => {
   const {
     user,
@@ -35,15 +37,33 @@ const addEmployee = asyncHandler(async (req, res) => {
     position,
     blood_type,
     start_date,
-    end_date
+    end_date,
+    pages = []
   } = req.body || {};
 
   if (!user || !name || !nik || !employment_type || !position) {
     throwError('Field ini harus diisi', 400);
   }
 
-  // 1. buat employee dulu biar dapat _id
-  let employee = new Employee({
+  // 🔒 pastikan pages array
+  if (!Array.isArray(pages)) {
+    throwError('Pages harus berupa array', 400);
+  }
+
+  // 🔄 normalisasi ke lowercase
+  const normalizedPages = pages.map((p) => String(p).toLowerCase());
+
+  // ❌ validasi enum
+  const invalidPages = normalizedPages.filter(
+    (p) => !employeePages.includes(p)
+  );
+
+  if (invalidPages.length) {
+    throwError(`Pages tidak valid: ${invalidPages.join(', ')}`, 400);
+  }
+
+  // 1️⃣ buat employee
+  const employee = new Employee({
     user,
     name,
     nik,
@@ -63,48 +83,50 @@ const addEmployee = asyncHandler(async (req, res) => {
     position,
     blood_type,
     start_date,
-    end_date
+    end_date,
+    pages: normalizedPages
   });
+
   await employee.save();
 
-  // 2. handle upload dokumen
-  let documents = {};
-  if (req.files) {
-    for (const field of [
-      'ktp',
-      'asuransi',
-      'mcu',
-      'keterangan_sehat',
-      'kelakuan_baik',
-      'vaksinasi'
-    ]) {
-      if (req.files[field]) {
-        const file = req.files[field][0];
-        const ext = path.extname(file.originalname);
-        const key = `karyawan/${employee._id}/${field}_${formatDate()}${ext}`;
-
-        await uploadBuffer(key, file.buffer, { contentType: file.mimetype });
-
-        documents[field] = {
-          key,
-          contentType: file.mimetype,
-          size: file.size,
-          uploadedAt: new Date()
-        };
-      }
-    }
-  }
-
-  // 3. update employee dengan documents
-  employee.documents = documents;
-  await employee.save();
-
-  // 4. update role user jadi Karyawan
+  // 2️⃣ update role user
   await User.findByIdAndUpdate(user, { role: 'karyawan' });
 
   res.status(201).json({
     message: 'Karyawan berhasil ditambahkan',
     data: employee
+  });
+});
+
+const updateEmployeePages = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { pages = [] } = req.body;
+
+  if (!Array.isArray(pages)) {
+    throwError('Pages harus berupa array', 400);
+  }
+
+  const normalizedPages = pages.map((p) => String(p).toLowerCase());
+
+  const invalidPages = normalizedPages.filter(
+    (p) => !employeePages.includes(p)
+  );
+
+  if (invalidPages.length) {
+    throwError(`Pages tidak valid: ${invalidPages.join(', ')}`, 400);
+  }
+
+  const employee = await Employee.findById(id);
+  if (!employee) {
+    throwError('Karyawan tidak ditemukan', 404);
+  }
+
+  employee.pages = normalizedPages;
+  await employee.save();
+
+  res.json({
+    message: 'Akses halaman berhasil diperbarui',
+    data: employee.pages
   });
 });
 
@@ -374,5 +396,6 @@ module.exports = {
   getEmployees,
   removeEmployee,
   updateEmployee,
+  updateEmployeePages,
   downloadEmployeeDocs
 };

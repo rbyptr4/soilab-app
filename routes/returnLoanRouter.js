@@ -21,8 +21,7 @@ const {
   finalizeReturnLoanOneShot,
   getAvailableLoanNumbers
 } = require('../controller/returnLoanController');
-
-// const { createReturnLoan } = require('../controller/debug');
+const { checkEmployeePageAccess } = require('../middleware/pageAccessHandler');
 
 const { uploadProofs, filterProofFiles } = require('../utils/uploadProofs');
 
@@ -39,7 +38,7 @@ Router.post(
 );
 
 Router.get('/all-return-loan', getAllReturnLoan);
-Router.get('/my-loan', getMyLoanNumbers);
+Router.get('/my-loan', checkEmployeePageAccess('returnloan'), getMyLoanNumbers);
 Router.post(
   '/finalize',
   uploadProofs,

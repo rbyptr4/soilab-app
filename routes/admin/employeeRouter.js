@@ -6,6 +6,7 @@ const {
   getEmployees,
   removeEmployee,
   updateEmployee,
+  updateEmployeePages,
   downloadEmployeeDocs
 } = require('../../controller/admin/employeeController');
 const Router = express.Router();
@@ -70,5 +71,7 @@ Router.put(
   validate(employeeUpdateValidation),
   updateEmployee
 );
+
+Router.put('/update/pages/:id', updateEmployeePages);
 
 module.exports = Router;

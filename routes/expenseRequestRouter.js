@@ -3,6 +3,7 @@ const express = require('express');
 const Router = express.Router();
 
 const validate = require('../middleware/validations/validate');
+const { checkEmployeePageAccess } = require('../middleware/pageAccessHandler');
 const {
   createExpenseRequestSchema,
   updateExpenseRequestSchema
@@ -32,7 +33,11 @@ Router.post(
 );
 
 Router.get('/all-expense', getExpenseRequests);
-Router.get('/my-expense-request', getMyExpenseRequests);
+Router.get(
+  '/my-expense-request',
+  checkEmployeePageAccess('expenserequest'),
+  getMyExpenseRequests
+);
 
 Router.get('/all-employee', getAllEmployee);
 Router.get('/employee', getEmployee);
