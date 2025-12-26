@@ -42,61 +42,81 @@ const addShowcase = asyncHandler(async (req, res) => {
   });
 });
 
-const getShelfs = asyncHandler(async (req, res) => {
+const getShowcases = asyncHandler(async (req, res) => {
   const mode = req.query.mode || 'paging';
   const limit = parseInt(req.query.limit) || 10;
-  const search = req.query.search || '';
+  const { project_name, location, search, sort } = req.query;
 
-  const filter = search
-    ? {
-        $or: [
-          { shelf_name: { $regex: search, $options: 'i' } },
-          { shelf_code: { $regex: search, $options: 'i' } }
-        ]
-      }
-    : {};
+  const filter = {};
+  if (project_name)
+    filter.project_name = { $regex: project_name, $options: 'i' };
+  if (location) filter.location = { $regex: location, $options: 'i' };
+  if (search) {
+    filter.$or = [
+      { project_name: { $regex: search, $options: 'i' } },
+      { location: { $regex: search, $options: 'i' } }
+    ];
+  }
 
-  if (req.query.warehouse) filter.warehouse = req.query.warehouse;
+  let sortOption = { createdAt: -1 };
+  if (sort) {
+    const [f, o] = sort.split(':');
+    sortOption = { [f]: o === 'asc' ? 1 : -1 };
+  }
 
   // ===== PAGING =====
   if (mode === 'paging') {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const skip = (page - 1) * limit;
 
-    const totalItems = await Shelf.countDocuments(filter);
-    const data = await Shelf.find(filter)
-      .populate('warehouse', 'warehouse_name warehouse_code')
+    const totalItems = await Showcase.countDocuments(filter);
+    const rows = await Showcase.find(filter)
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 })
+      .sort(sortOption)
       .lean();
+
+    const data = await Promise.all(
+      rows.map(async (s) => ({
+        ...s,
+        imgUrl: s.img?.key ? await getFileUrl(s.img.key, 86400) : null
+      }))
+    );
 
     return res.json({
       page,
       limit,
       totalItems,
       totalPages: Math.ceil(totalItems / limit),
+      sort: sortOption,
       data
     });
   }
 
-  // ===== CURSOR (ASLI) =====
+  // ===== CURSOR =====
   if (mode === 'cursor') {
     if (req.query.cursor)
       filter.createdAt = { $lt: new Date(req.query.cursor) };
 
-    const rows = await Shelf.find(filter)
-      .populate('warehouse', 'warehouse_name warehouse_code')
-      .sort({ createdAt: -1 })
+    const rows = await Showcase.find(filter)
+      .sort(sortOption)
       .limit(limit + 1)
       .lean();
 
     const hasMore = rows.length > limit;
-    const data = hasMore ? rows.slice(0, limit) : rows;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+    const data = await Promise.all(
+      sliced.map(async (s) => ({
+        ...s,
+        imgUrl: s.img?.key ? await getFileUrl(s.img.key, 86400) : null
+      }))
+    );
 
     return res.json({
+      sort: sortOption,
       data,
-      nextCursor: hasMore ? data[data.length - 1].createdAt : null,
+      nextCursor: hasMore ? sliced[sliced.length - 1].createdAt : null,
       hasMore
     });
   }
