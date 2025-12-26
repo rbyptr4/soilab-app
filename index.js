@@ -57,9 +57,8 @@ app.use('/admin/showcases', require('./routes/admin/showcaseRouter'));
 app.use('/users', require('./routes/userRouter')); // campuran public/protected di dalam router ini
 
 // ---------------- PROTECTED ROUTES (global) ----------------
-// app.use(validateToken);
+app.use(validateToken);
 
-// (bisnis)
 app.use('/orders', require('./routes/orderRouter'));
 app.use('/expense-request', require('./routes/expenseRequestRouter'));
 app.use('/loans', require('./routes/loanRouter'));
