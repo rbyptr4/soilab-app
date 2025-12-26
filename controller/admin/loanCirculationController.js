@@ -9,6 +9,25 @@ function pickImageMeta(item) {
   return null;
 }
 
+function computeLoanStatus(borrowedItems = []) {
+  if (!borrowedItems.length) return 'Sedang dipinjam';
+
+  const statuses = borrowedItems.map((it) => it.item_status);
+
+  const hasDipinjam = statuses.includes('Dipinjam');
+  const hasDone = statuses.some((s) => s === 'Dikembalikan' || s === 'Hilang');
+
+  if (hasDipinjam && hasDone) {
+    return 'Dikembalikan sebagian';
+  }
+
+  if (!hasDipinjam) {
+    return 'Selesai';
+  }
+
+  return 'Sedang dipinjam';
+}
+
 async function resolveImageUrl(meta) {
   try {
     if (!meta) return null;
@@ -70,6 +89,13 @@ const getLoanCirculations = asyncHandler(async (req, res) => {
     .limit(limit)
     .sort(sortOption)
     .lean();
+
+  rows = rows.map((row) => {
+    return {
+      ...row,
+      loan_status: computeLoanStatus(row.borrowed_items)
+    };
+  });
 
   res.status(200).json({
     page,
